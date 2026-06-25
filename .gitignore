@@ -1,0 +1,19 @@
+node_modules
+dist
+dist-ssr
+*.local
+.DS_Store
+.vite
+*.log
+outputs/
+docs/
+.claude
+
+# build artifacts
+tsconfig.tsbuildinfo
+
+# 受许可约束 / 体积大的数据 —— 不随公开仓库分发（见 src/data/SOURCE.md）。
+# 用 npm run gen:* 在本地生成；详见 README「数据准备」。
+src/data/dict/
+src/data/lexicon-table.json
+src/data/BNC_COCA_lists.csv

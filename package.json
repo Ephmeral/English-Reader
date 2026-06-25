@@ -1,0 +1,42 @@
+{
+  "name": "web-read",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "英语阅读器 MVP — 分级阅读 + 按需 i+1 英解英",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --ext .ts,.tsx",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",
+    "gen:lexicon": "node scripts/gen-lexicon.mjs",
+    "gen:dict:wordnet": "node scripts/gen-dict-wordnet.mjs",
+    "gen:dict:ecdict": "node scripts/gen-dict-ecdict.mjs",
+    "gen:dict": "npm run gen:dict:wordnet && npm run gen:dict:ecdict",
+    "test:dict": "node scripts/check-dict-wordnet.mjs",
+    "test:offsets": "node scripts/check-offsets.mjs",
+    "test:epub": "tsx scripts/check-epub.ts",
+    "report:quality": "node scripts/quality-report.mjs"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@typescript-eslint/eslint-plugin": "^8.13.0",
+    "@typescript-eslint/parser": "^8.13.0",
+    "@vitejs/plugin-react": "^4.3.3",
+    "@xmldom/xmldom": "^0.9.10",
+    "eslint": "^8.57.1",
+    "eslint-plugin-react-hooks": "^4.6.2",
+    "prettier": "^3.3.3",
+    "tsx": "^4.22.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}
