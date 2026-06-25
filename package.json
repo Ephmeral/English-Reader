@@ -18,6 +18,7 @@
     "test:dict": "node scripts/check-dict-wordnet.mjs",
     "test:offsets": "node scripts/check-offsets.mjs",
     "test:epub": "tsx scripts/check-epub.ts",
+    "test:pagination": "tsx scripts/check-pagination.ts",
     "report:quality": "node scripts/quality-report.mjs"
   },
   "dependencies": {
