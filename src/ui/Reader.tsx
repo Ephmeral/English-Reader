@@ -141,7 +141,13 @@ export function Reader({
       ({
         '--reader-font': `${readingPrefs.fontPx}px`,
         '--reader-line': `${readingPrefs.lineHeight}`,
-        '--reader-measure': `${readingPrefs.measureCh}ch`,
+        '--reader-margin': `${readingPrefs.marginPx}px`,
+        '--reader-font-family':
+          readingPrefs.fontFamily === 'serif'
+            ? "'Literata', Georgia, 'Times New Roman', 'Songti SC', serif"
+            : "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+        '--reader-align': readingPrefs.justify ? 'justify' : 'left',
+        '--reader-hyphens': readingPrefs.justify ? 'auto' : 'manual',
       }) as CSSProperties,
     [readingPrefs],
   );
@@ -433,7 +439,12 @@ export function Reader({
         onMouseUp={() => window.setTimeout(updateSelection, 0)}
         onKeyUp={updateSelection}
       >
-        <article className="reader-page" onClick={onLookupClick} onKeyDown={onLookupKeyDown}>
+        <article
+          className="reader-page"
+          lang="en"
+          onClick={onLookupClick}
+          onKeyDown={onLookupKeyDown}
+        >
           {nodes}
         </article>
         {activeSelection && (

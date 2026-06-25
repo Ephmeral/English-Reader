@@ -1,3 +1,35 @@
+@font-face {
+  font-family: 'Literata';
+  src: url('../assets/fonts/literata-latin-normal.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Literata';
+  src: url('../assets/fonts/literata-latin-italic.woff2') format('woff2');
+  font-style: italic;
+  font-weight: 400 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Inter';
+  src: url('../assets/fonts/inter-latin-normal.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Inter';
+  src: url('../assets/fonts/inter-latin-italic.woff2') format('woff2');
+  font-style: italic;
+  font-weight: 400 700;
+  font-display: swap;
+}
+
 :root {
   --bg: #fafaf8;
   --fg: #1c1c1a;
@@ -240,12 +272,19 @@ body {
   color: var(--muted);
   text-align: right;
 }
+.font-options,
 .theme-options {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
   gap: 6px;
   margin: 4px 0 12px;
 }
+.font-options {
+  grid-template-columns: repeat(2, 1fr);
+}
+.theme-options {
+  grid-template-columns: repeat(3, 1fr);
+}
+.font-options button,
 .theme-options button,
 .reading-reset {
   border: 1px solid var(--border);
@@ -255,10 +294,19 @@ body {
   padding: 5px 8px;
   cursor: pointer;
 }
+.font-options button.active,
 .theme-options button.active {
   border-color: var(--accent);
   color: var(--accent);
   font-weight: 700;
+}
+.reading-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 13px;
 }
 .reading-reset {
   width: 100%;
@@ -269,14 +317,17 @@ body {
   padding: 8px 0 64px;
 }
 .reader-page {
-  max-width: var(--reader-measure, 720px);
-  margin: 0 auto;
-  padding: 16px 24px;
+  margin: 0 min(var(--reader-margin, 64px), 12vw);
+  padding: 16px 0;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: break-word;
+  word-break: normal;
   font-size: var(--reader-font, 19px);
   line-height: var(--reader-line, 1.8);
-  font-family: Georgia, 'Times New Roman', 'Songti SC', serif;
+  font-family: var(--reader-font-family, 'Literata', Georgia, 'Times New Roman', serif);
+  text-align: var(--reader-align, justify);
+  text-align-last: left;
+  hyphens: var(--reader-hyphens, auto);
 }
 .word.marked {
   background: var(--marked-bg);

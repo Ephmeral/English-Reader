@@ -12,6 +12,7 @@ import {
   DEFAULT_READING_PREFS,
   DEFAULT_THEME,
   SETTINGS_KEYS,
+  normalizeReadingPrefs,
 } from './deps';
 import type { DictEnabled, ReadingPrefs, Theme } from './deps';
 import { DepsProvider, useDeps } from './context';
@@ -130,8 +131,8 @@ function Shell() {
     deps.storage.getSetting<Partial<XraySettings>>(SETTINGS_KEYS.xray).then((value) => {
       setXray(normalizeXraySettings(value));
     });
-    deps.storage.getSetting<Partial<ReadingPrefs>>(SETTINGS_KEYS.readingPrefs).then((value) => {
-      if (value) setReadingPrefs({ ...DEFAULT_READING_PREFS, ...value });
+    deps.storage.getSetting<unknown>(SETTINGS_KEYS.readingPrefs).then((value) => {
+      setReadingPrefs(normalizeReadingPrefs(value));
     });
     deps.storage.getSetting<Theme>(SETTINGS_KEYS.theme).then((value) => {
       if (value === 'day' || value === 'sepia' || value === 'night') setTheme(value);
@@ -164,8 +165,9 @@ function Shell() {
 
   const changeReadingPrefs = useCallback(
     (next: ReadingPrefs) => {
-      setReadingPrefs(next);
-      void deps.storage.setSetting(SETTINGS_KEYS.readingPrefs, next);
+      const normalized = normalizeReadingPrefs(next);
+      setReadingPrefs(normalized);
+      void deps.storage.setSetting(SETTINGS_KEYS.readingPrefs, normalized);
     },
     [deps],
   );

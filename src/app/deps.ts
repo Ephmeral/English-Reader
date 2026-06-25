@@ -35,16 +35,37 @@ export const DEFAULT_DICT_ENABLED: DictEnabled = {
 };
 
 export interface ReadingPrefs {
-  measureCh: number;
   fontPx: number;
   lineHeight: number;
+  marginPx: number;
+  fontFamily: 'serif' | 'sans';
+  justify: boolean;
 }
 
 export const DEFAULT_READING_PREFS: ReadingPrefs = {
-  measureCh: 70,
   fontPx: 19,
   lineHeight: 1.8,
+  marginPx: 64,
+  fontFamily: 'serif',
+  justify: true,
 };
+
+export function normalizeReadingPrefs(value: unknown): ReadingPrefs {
+  if (!value || typeof value !== 'object') return DEFAULT_READING_PREFS;
+  const raw = value as Partial<ReadingPrefs>;
+  return {
+    fontPx: Number.isFinite(raw.fontPx) ? raw.fontPx! : DEFAULT_READING_PREFS.fontPx,
+    lineHeight: Number.isFinite(raw.lineHeight)
+      ? raw.lineHeight!
+      : DEFAULT_READING_PREFS.lineHeight,
+    marginPx: Number.isFinite(raw.marginPx) ? raw.marginPx! : DEFAULT_READING_PREFS.marginPx,
+    fontFamily:
+      raw.fontFamily === 'sans' || raw.fontFamily === 'serif'
+        ? raw.fontFamily
+        : DEFAULT_READING_PREFS.fontFamily,
+    justify: typeof raw.justify === 'boolean' ? raw.justify : DEFAULT_READING_PREFS.justify,
+  };
+}
 
 export type Theme = 'day' | 'sepia' | 'night';
 

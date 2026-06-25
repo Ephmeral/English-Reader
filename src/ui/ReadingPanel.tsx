@@ -24,18 +24,18 @@ export function ReadingPanel({
   return (
     <div className="reading-panel" role="dialog" aria-label="阅读设置">
       <label className="reading-control">
-        <span>行宽</span>
+        <span>页边距</span>
         <input
           type="range"
-          min={45}
-          max={90}
-          step={1}
-          value={prefs.measureCh}
+          min={24}
+          max={120}
+          step={4}
+          value={prefs.marginPx}
           onChange={(event) =>
-            onPrefsChange({ ...prefs, measureCh: Number(event.currentTarget.value) })
+            onPrefsChange({ ...prefs, marginPx: Number(event.currentTarget.value) })
           }
         />
-        <span className="reading-value">{prefs.measureCh}ch</span>
+        <span className="reading-value">{prefs.marginPx}px</span>
       </label>
 
       <label className="reading-control">
@@ -66,6 +66,32 @@ export function ReadingPanel({
           }
         />
         <span className="reading-value">{prefs.lineHeight.toFixed(1)}</span>
+      </label>
+
+      <div className="font-options" aria-label="字体">
+        <button
+          type="button"
+          className={prefs.fontFamily === 'serif' ? 'active' : ''}
+          onClick={() => onPrefsChange({ ...prefs, fontFamily: 'serif' })}
+        >
+          衬线
+        </button>
+        <button
+          type="button"
+          className={prefs.fontFamily === 'sans' ? 'active' : ''}
+          onClick={() => onPrefsChange({ ...prefs, fontFamily: 'sans' })}
+        >
+          无衬线
+        </button>
+      </div>
+
+      <label className="reading-switch">
+        <input
+          type="checkbox"
+          checked={prefs.justify}
+          onChange={(event) => onPrefsChange({ ...prefs, justify: event.currentTarget.checked })}
+        />
+        <span>两端对齐</span>
       </label>
 
       <div className="theme-options" aria-label="主题">
