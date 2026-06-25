@@ -306,8 +306,10 @@ export function Reader({
   const pageCount = Math.max(1, effectivePageStarts.length);
   const safePageIndex = Math.max(0, Math.min(pageCount - 1, pageIndex));
   const chapterRatio = chapterTokens.length ? (safePageIndex + 1) / pageCount : 1;
-  const progressPercent = Math.round(chapterRatio * 100);
-  const remainingMinutes = Math.ceil((chapterWordCount * (1 - chapterRatio)) / 200);
+  const currentPageNumber = safePageIndex + 1;
+  const remainingPages = Math.max(0, pageCount - currentPageNumber);
+  const wordsPerPage = pageCount ? chapterWordCount / pageCount : chapterWordCount;
+  const remainingMinutes = Math.ceil((remainingPages * wordsPerPage) / 200);
   const pageWindow = useMemo(
     () => [safePageIndex - 1, safePageIndex, safePageIndex + 1],
     [safePageIndex],
@@ -808,11 +810,13 @@ export function Reader({
           </div>
         )}
       </div>
-      <div className="reading-progress" aria-label="本章阅读进度">
-        <div className="reading-progress-track">
-          <i style={{ width: `${progressPercent}%` }} />
-        </div>
-        <span>本章约剩 {remainingMinutes} 分钟</span>
+      <div className="page-status" aria-label="本章页码">
+        <span>
+          本章第 {currentPageNumber} / {pageCount} 页
+        </span>
+        <span>
+          {remainingPages === 0 ? '本章最后一页' : `剩 ${remainingPages} 页 · 约 ${remainingMinutes} 分钟`}
+        </span>
       </div>
     </div>
   );

@@ -404,13 +404,15 @@ body {
 .reader-image {
   margin: 18px auto;
   max-width: min(480px, 100%);
+  max-height: 100%;
   text-align: center;
 }
 .reader-image img {
   display: block;
   max-width: 100%;
-  max-height: 420px;
+  max-height: min(420px, calc(100dvh - 260px));
   margin: 0 auto;
+  object-fit: contain;
   border-radius: 6px;
 }
 .image-placeholder {
@@ -422,25 +424,17 @@ body {
   border-radius: 6px;
   background: var(--placeholder-bg);
 }
-.reading-progress {
+.page-status {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
   padding: 0 24px 10px;
   font-size: 12px;
   color: var(--muted);
 }
-.reading-progress-track {
-  flex: 1;
-  height: 3px;
-  overflow: hidden;
-  background: var(--border);
-  border-radius: 999px;
-}
-.reading-progress-track i {
-  display: block;
-  height: 100%;
-  background: var(--accent);
+.page-status span:last-child {
+  text-align: right;
 }
 .focus-exit {
   display: none;
