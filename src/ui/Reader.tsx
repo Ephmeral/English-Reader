@@ -23,8 +23,7 @@ export interface WordClick {
 }
 
 export interface ResumeState {
-  chapterIndex: number;
-  scrollOffset: number;
+  offset: number;
 }
 
 export interface JumpTarget {
@@ -135,13 +134,44 @@ function createMeasureNodes(tokens: readonly Token[], ctx: RenderTokensContext):
   });
 }
 
+function runningWordPositionForOffset(wordStarts: readonly number[], offset: number): number {
+  let low = 0;
+  let high = wordStarts.length;
+
+  while (low < high) {
+    const mid = low + Math.floor((high - low) / 2);
+    const start = wordStarts[mid] ?? 0;
+    if (start < offset) low = mid + 1;
+    else high = mid;
+  }
+
+  return low;
+}
+
+function withAnchoredPageStart(
+  pageStarts: readonly number[],
+  anchor: number,
+  tokens: readonly Token[],
+): number[] {
+  if (!Number.isFinite(anchor) || pageStarts.length === 0 || pageStarts.includes(anchor)) {
+    return [...pageStarts];
+  }
+  const first = pageStarts[0] ?? 0;
+  const lastTokenStart = tokens[tokens.length - 1]?.start ?? first;
+  if (anchor <= first || anchor > lastTokenStart) return [...pageStarts];
+
+  const nextIndex = pageStarts.findIndex((start) => start > anchor);
+  if (nextIndex === -1) return [...pageStarts, anchor];
+  return [...pageStarts.slice(0, nextIndex), anchor, ...pageStarts.slice(nextIndex)];
+}
+
 export function Reader({
   doc,
   storage,
   sliderLevel,
   scale,
   chapterIndex,
-  initialScrollOffset,
+  initialOffset,
   annotations,
   knownLemmas,
   xray,
@@ -166,7 +196,7 @@ export function Reader({
   sliderLevel: number;
   scale: LevelScale;
   chapterIndex: number;
-  initialScrollOffset: number;
+  initialOffset: number;
   annotations: Annotation[];
   knownLemmas: ReadonlySet<string>;
   xray: XraySettings;
@@ -195,7 +225,10 @@ export function Reader({
   const measureRef = useRef<HTMLElement>(null);
   const maxPercentRef = useRef(0);
   const imageUrlsRef = useRef<Map<string, string>>(new Map());
-  const currentPageStartRef = useRef(0);
+  const currentPageStartRef = useRef(initialOffset);
+  const lastInitialOffsetRef = useRef(initialOffset);
+  const pendingAnchorRef = useRef<number | null>(initialOffset);
+  const userNavigationRef = useRef(false);
   const pendingTurnRef = useRef<number | null>(null);
   const pointerStartRef = useRef<{ x: number; y: number } | null>(null);
   const suppressLookupRef = useRef(false);
@@ -226,6 +259,10 @@ export function Reader({
   const chapterWordCount = useMemo(
     () => chapterTokens.filter((token) => token.kind === 'word').length,
     [chapterTokens],
+  );
+  const runningWordStarts = useMemo(
+    () => doc.tokens.filter((token) => token.kind === 'word').map((token) => token.start),
+    [doc.tokens],
   );
   const readerStyle = useMemo(
     () =>
@@ -310,15 +347,16 @@ export function Reader({
     };
   }, [doc.id, imageAssetIds, storage]);
 
-  useEffect(() => {
-    currentPageStartRef.current = initialScrollOffset;
-    maxPercentRef.current = Math.round((safeChapterIndex / chapters.length) * 100);
+  useLayoutEffect(() => {
+    pendingAnchorRef.current = initialOffset;
+    userNavigationRef.current = false;
+    currentPageStartRef.current = initialOffset;
+    maxPercentRef.current = 0;
     pendingTurnRef.current = null;
     setPageStarts([]);
-    setPageIndex(0);
     setTrackAnimating(false);
     setTrackPosition(-100);
-  }, [chapters.length, doc.id, initialScrollOffset, safeChapterIndex]);
+  }, [doc.id, initialOffset, safeChapterIndex]);
 
   useLayoutEffect(() => {
     const reader = readerRef.current;
@@ -329,40 +367,62 @@ export function Reader({
     }
 
     let frame: number | null = null;
+    let alive = true;
     const measure = () => {
+      if (!alive) return;
       const starts = measurePageStarts(measureBox, chapterTokens, {
         pageHeightPx: Math.max(1, reader.clientHeight),
         renderTokens: (tokens) => createMeasureNodes(tokens, renderCtx),
       });
-      const retainedOffset = currentPageStartRef.current || chapterTokens[0]?.start || 0;
-      setPageStarts(starts);
-      setPageIndex(pageRangeForOffset(starts, retainedOffset));
+      const retainedOffset =
+        pendingAnchorRef.current ?? currentPageStartRef.current ?? chapterTokens[0]?.start ?? 0;
+      const anchoredStarts = withAnchoredPageStart(starts, retainedOffset, chapterTokens);
+      setPageStarts(anchoredStarts);
+      setPageIndex(pageRangeForOffset(anchoredStarts, retainedOffset));
       pendingTurnRef.current = null;
       setTrackAnimating(false);
       setTrackPosition(-100);
     };
 
     measure();
+    frame = requestAnimationFrame(measure);
+    if (document.fonts) {
+      void document.fonts.ready.then(measure);
+    }
     const resizeObserver = new ResizeObserver(() => {
       if (frame != null) cancelAnimationFrame(frame);
       frame = requestAnimationFrame(measure);
     });
     resizeObserver.observe(reader);
     return () => {
+      alive = false;
       resizeObserver.disconnect();
       if (frame != null) cancelAnimationFrame(frame);
     };
-  }, [chapterTokens, readingPrefs, renderCtx]);
+  }, [chapterTokens, initialOffset, readingPrefs, renderCtx]);
+
+  useLayoutEffect(() => {
+    if (lastInitialOffsetRef.current !== initialOffset) {
+      lastInitialOffsetRef.current = initialOffset;
+      pendingAnchorRef.current = initialOffset;
+      currentPageStartRef.current = initialOffset;
+    }
+    const pendingAnchor = pendingAnchorRef.current;
+    if (pendingAnchor != null && pageStarts.length > 0) {
+      setPageIndex(pageRangeForOffset(pageStarts, pendingAnchor));
+    }
+  }, [initialOffset, pageStarts]);
 
   useEffect(() => {
-    if (!jumpTarget || effectivePageStarts.length === 0) return;
-    const nextPage = pageRangeForOffset(effectivePageStarts, jumpTarget.offset);
+    if (!jumpTarget || pageStarts.length === 0) return;
+    const nextPage = pageRangeForOffset(pageStarts, jumpTarget.offset);
+    pendingAnchorRef.current = jumpTarget.offset;
     currentPageStartRef.current = jumpTarget.offset;
     setPageIndex(nextPage);
     setTrackAnimating(false);
     setTrackPosition(-100);
     onJumpComplete();
-  }, [effectivePageStarts, jumpTarget, onJumpComplete]);
+  }, [jumpTarget, onJumpComplete, pageStarts]);
 
   useEffect(() => {
     if (!readingPanelOpen) return;
@@ -436,6 +496,7 @@ export function Reader({
         return;
       }
 
+      userNavigationRef.current = true;
       pendingTurnRef.current = delta;
       setTrackAnimating(true);
       requestAnimationFrame(() => setTrackPosition(delta > 0 ? -200 : 0));
@@ -536,13 +597,29 @@ export function Reader({
   );
 
   useEffect(() => {
-    if (effectivePageStarts.length === 0) return;
-    const offset = effectivePageStarts[safePageIndex] ?? chapterTokens[0]?.start ?? 0;
+    if (pageStarts.length === 0) return;
+    if (jumpTarget) return;
+    const targetPage = pageRangeForOffset(pageStarts, initialOffset);
+    if (!userNavigationRef.current && safePageIndex !== targetPage) {
+      setPageIndex(targetPage);
+      return;
+    }
+    const pendingAnchor = pendingAnchorRef.current;
+    if (pendingAnchor != null) {
+      const targetPage = pageRangeForOffset(pageStarts, pendingAnchor);
+      if (safePageIndex !== targetPage) return;
+      pendingAnchorRef.current = null;
+    }
+    const offset = pageStarts[safePageIndex] ?? chapterTokens[0]?.start ?? 0;
+    userNavigationRef.current = false;
     currentPageStartRef.current = offset;
     onVisibleOffsetChange(offset);
-    onResumeChange({ chapterIndex: safeChapterIndex, scrollOffset: offset });
+    onResumeChange({ offset });
 
-    const percent = Math.round(((safeChapterIndex + chapterRatio) / chapters.length) * 100);
+    const wordPosition = runningWordPositionForOffset(runningWordStarts, offset);
+    const percent = runningWordStarts.length
+      ? Math.round((wordPosition / runningWordStarts.length) * 100)
+      : 100;
     const currentTokens = pageTokens[1] ?? [];
     const maxTokenId = currentTokens[0]?.id ?? startTokenId;
     if (percent > maxPercentRef.current) {
@@ -552,12 +629,15 @@ export function Reader({
   }, [
     chapterTokens,
     chapterRatio,
-    chapters.length,
     effectivePageStarts,
+    initialOffset,
     onProgress,
     onResumeChange,
     onVisibleOffsetChange,
     pageTokens,
+    pageStarts,
+    jumpTarget,
+    runningWordStarts,
     safeChapterIndex,
     safePageIndex,
     startTokenId,

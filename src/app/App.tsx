@@ -1,6 +1,7 @@
 // 顶层装配（规格 §4 app/）。视图切换 + 会话生命周期 + 事件埋点编排。
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { flushSync } from 'react-dom';
 import type { Annotation } from '../core/model/annotation';
 import type { Document } from '../core/model/token';
 import { BandLevelScale, SLIDER_DEFAULT } from '../core/model/level';
@@ -67,6 +68,25 @@ function chapterForOffset(doc: Document, offset: number): number {
     else break;
   }
   return chapter;
+}
+
+function chapterStartOffset(doc: Document, index: number): number {
+  const chapter = doc.chapters[clampChapter(doc, index)];
+  const token = chapter ? doc.tokens[chapter.startTokenId] : doc.tokens[0];
+  return token?.start ?? 0;
+}
+
+function normalizeResumeState(doc: Document, value: unknown): ResumeState {
+  if (value && typeof value === 'object') {
+    const raw = value as { offset?: unknown; chapterIndex?: unknown };
+    if (typeof raw.offset === 'number' && Number.isFinite(raw.offset)) {
+      return { offset: raw.offset };
+    }
+    if (typeof raw.chapterIndex === 'number' && Number.isFinite(raw.chapterIndex)) {
+      return { offset: chapterStartOffset(doc, raw.chapterIndex) };
+    }
+  }
+  return { offset: chapterStartOffset(doc, 0) };
 }
 
 function Shell() {
@@ -196,20 +216,23 @@ function Shell() {
       const loaded = await deps.storage.loadDocument(id);
       if (!loaded) return;
       const [resume, loadedAnnotations, loadedVocab] = await Promise.all([
-        deps.storage.getSetting<ResumeState>(resumeKey(loaded.id)),
+        deps.storage.getSetting<unknown>(resumeKey(loaded.id)),
         listAnnotations(deps, loaded.id),
         deps.storage.loadVocab(),
       ]);
-      setDoc(loaded);
-      setChapterIndex(clampChapter(loaded, resume?.chapterIndex ?? 0));
-      setResumeOffset(resume?.scrollOffset ?? 0);
-      setCurrentOffset(tokenForOffset(loaded, 0)?.start ?? 0);
-      setAnnotations(loadedAnnotations);
-      setVocabEntries(loadedVocab);
-      setJumpTarget(null);
-      setSel(null);
-      setSelectedPriorComprehension(undefined);
-      setView('reader');
+      const normalizedResume = normalizeResumeState(loaded, resume);
+      flushSync(() => {
+        setChapterIndex(chapterForOffset(loaded, normalizedResume.offset));
+        setResumeOffset(normalizedResume.offset);
+        setCurrentOffset(normalizedResume.offset);
+        setAnnotations(loadedAnnotations);
+        setVocabEntries(loadedVocab);
+        setJumpTarget({ offset: normalizedResume.offset, nonce: Date.now() });
+        setSel(null);
+        setSelectedPriorComprehension(undefined);
+        setDoc(loaded);
+        setView('reader');
+      });
       await deps.logger.log({
         type: 'doc_open',
         docId: loaded.id,
@@ -226,15 +249,13 @@ function Shell() {
     (index: number) => {
       if (!doc) return;
       const next = clampChapter(doc, index);
+      const offset = chapterStartOffset(doc, next);
       setChapterIndex(next);
-      setResumeOffset(0);
+      setResumeOffset(offset);
       setJumpTarget(null);
       setSel(null);
       setSelectedPriorComprehension(undefined);
-      void deps.storage.setSetting<ResumeState>(resumeKey(doc.id), {
-        chapterIndex: next,
-        scrollOffset: 0,
-      });
+      void deps.storage.setSetting<ResumeState>(resumeKey(doc.id), { offset });
     },
     [deps, doc],
   );
@@ -242,6 +263,7 @@ function Shell() {
   const saveResume = useCallback(
     (state: ResumeState) => {
       if (!doc) return;
+      setResumeOffset(state.offset);
       void deps.storage.setSetting<ResumeState>(resumeKey(doc.id), state);
     },
     [deps, doc],
@@ -322,15 +344,12 @@ function Shell() {
       if (!doc) return;
       const nextChapter = chapterForOffset(doc, offset);
       setChapterIndex(nextChapter);
-      setResumeOffset(0);
+      setResumeOffset(offset);
       setJumpTarget({ offset, nonce: Date.now() });
       setSel(null);
       setSelectedPriorComprehension(undefined);
       setView('reader');
-      void deps.storage.setSetting<ResumeState>(resumeKey(doc.id), {
-        chapterIndex: nextChapter,
-        scrollOffset: 0,
-      });
+      void deps.storage.setSetting<ResumeState>(resumeKey(doc.id), { offset });
     },
     [deps, doc],
   );
@@ -397,7 +416,7 @@ function Shell() {
                   sliderLevel={sliderLevel}
                   scale={scale}
                   chapterIndex={chapterIndex}
-                  initialScrollOffset={resumeOffset}
+                  initialOffset={resumeOffset}
                   annotations={annotations}
                   knownLemmas={knownLemmas}
                   xray={xray}
