@@ -412,6 +412,10 @@ function Shell() {
                   onCreateRangeAnnotation={(range) => void saveRangeAnnotation(range)}
                   onJumpComplete={() => setJumpTarget(null)}
                   onXrayEnabledChange={changeXrayEnabled}
+                  onPageTurn={() => {
+                    setSel(null);
+                    setSelectedPriorComprehension(undefined);
+                  }}
                   onReadingPrefsChange={changeReadingPrefs}
                   onThemeChange={changeTheme}
                   onToggleFocus={() => setFocusMode(true)}

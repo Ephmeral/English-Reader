@@ -1,8 +1,8 @@
 // 阅读器渲染：按章节渲染 Document 词元流，高于滑块水平的词高亮可点。
 // 埋 reading_progress；EPUB 图片从 Storage asset 加载。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, KeyboardEvent, MouseEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent, WheelEvent } from 'react';
 import type { Annotation } from '../core/model/annotation';
 import type { Document, Token } from '../core/model/token';
 import type { LevelScale } from '../core/model/level';
@@ -15,6 +15,7 @@ import type { ReadingPrefs, Theme } from '../app/deps';
 import type { SourceSelection } from './selection';
 import { selectionToSourceRange } from './selection';
 import { ReadingPanel } from './ReadingPanel';
+import { measurePageStarts, pageRangeForOffset, tokensForPage } from './reader/paginate';
 
 export interface WordClick {
   token: Token;
@@ -37,22 +38,101 @@ function intersectsRange(token: Token, annotation: Annotation): boolean {
   return token.start < annotation.anchor.end && token.end > annotation.anchor.start;
 }
 
-function topVisibleOffset(reader: HTMLElement): number | null {
-  const top = reader.getBoundingClientRect().top;
-  const nodes = [...reader.querySelectorAll<HTMLElement>('[data-start]')];
-  const visible = nodes.find((node) => node.getBoundingClientRect().bottom >= top + 4);
-  const value = Number(visible?.dataset.start);
-  return Number.isFinite(value) ? value : null;
-}
-
 function hasActiveTextSelection(): boolean {
   const selection = window.getSelection();
   return Boolean(selection && !selection.isCollapsed);
 }
 
-function scrollRatio(reader: HTMLElement): number {
-  const denom = reader.scrollHeight - reader.clientHeight;
-  return denom > 0 ? Math.min(1, Math.max(0, reader.scrollTop / denom)) : 1;
+interface RenderTokensContext {
+  annotations: Annotation[];
+  imageUrls: Record<string, string>;
+  knownLemmas: ReadonlySet<string>;
+  learner: ReturnType<LevelScale['fromSlider']>;
+  scale: LevelScale;
+  xray: XraySettings;
+}
+
+function tokenPresentation(token: Token, ctx: RenderTokensContext) {
+  const userHighlighted = ctx.annotations.some((annotation) => intersectsRange(token, annotation));
+  if (token.kind === 'punct') {
+    return {
+      className: userHighlighted ? 'punct user-highlight' : 'punct',
+      style: undefined,
+      title: undefined,
+    };
+  }
+  if (token.kind !== 'word') {
+    return { className: undefined, style: undefined, title: undefined };
+  }
+
+  const marked = !ctx.xray.enabled && shouldHighlight(token, ctx.learner, ctx.scale, ctx.knownLemmas);
+  const bucket = ctx.xray.buckets[bucketOf(token.band)];
+  const bandLabel = token.band == null ? 'OOV' : `${token.band}k`;
+  return {
+    className: ['word', marked ? 'marked' : '', userHighlighted ? 'user-highlight' : '']
+      .filter(Boolean)
+      .join(' '),
+    style: ctx.xray.enabled && bucket?.visible ? { color: bucket.color } : undefined,
+    title: `${bandLabel} · 点击查词`,
+  };
+}
+
+function renderTokens(tokens: readonly Token[], ctx: RenderTokensContext) {
+  return tokens.map((token) => {
+    if (token.kind === 'image') {
+      const src = token.assetId ? ctx.imageUrls[token.assetId] : undefined;
+      return (
+        <figure key={token.id} className="reader-image" data-start={token.start}>
+          {src ? <img src={src} alt="" loading="lazy" /> : <div className="image-placeholder" />}
+        </figure>
+      );
+    }
+
+    const presentation = tokenPresentation(token, ctx);
+    if (token.kind !== 'word') {
+      return (
+        <span key={token.id} className={presentation.className} data-start={token.start}>
+          {token.surface}
+        </span>
+      );
+    }
+
+    return (
+      <span
+        key={token.id}
+        className={presentation.className}
+        data-start={token.start}
+        role="button"
+        tabIndex={0}
+        title={presentation.title}
+        style={presentation.style}
+      >
+        {token.surface}
+      </span>
+    );
+  });
+}
+
+function createMeasureNodes(tokens: readonly Token[], ctx: RenderTokensContext): (Node | string)[] {
+  return tokens.map((token) => {
+    if (token.kind === 'image') {
+      const figure = document.createElement('figure');
+      figure.className = 'reader-image';
+      figure.dataset.start = String(token.start);
+      const placeholder = document.createElement('div');
+      placeholder.className = 'image-placeholder';
+      figure.append(placeholder);
+      return figure;
+    }
+
+    const span = document.createElement('span');
+    const presentation = tokenPresentation(token, ctx);
+    if (presentation.className) span.className = presentation.className;
+    if (presentation.style?.color) span.style.color = presentation.style.color;
+    span.dataset.start = String(token.start);
+    span.textContent = token.surface;
+    return span;
+  });
 }
 
 export function Reader({
@@ -76,6 +156,7 @@ export function Reader({
   onCreateRangeAnnotation,
   onJumpComplete,
   onXrayEnabledChange,
+  onPageTurn,
   onReadingPrefsChange,
   onThemeChange,
   onToggleFocus,
@@ -105,19 +186,29 @@ export function Reader({
   }) => void;
   onJumpComplete: () => void;
   onXrayEnabledChange: (enabled: boolean) => void;
+  onPageTurn: () => void;
   onReadingPrefsChange: (prefs: ReadingPrefs) => void;
   onThemeChange: (theme: Theme) => void;
   onToggleFocus: () => void;
 }) {
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const readerRef = useRef<HTMLDivElement>(null);
+  const measureRef = useRef<HTMLElement>(null);
   const maxPercentRef = useRef(0);
   const imageUrlsRef = useRef<Map<string, string>>(new Map());
+  const currentPageStartRef = useRef(0);
+  const pendingTurnRef = useRef<number | null>(null);
+  const pointerStartRef = useRef<{ x: number; y: number } | null>(null);
+  const suppressLookupRef = useRef(false);
+  const wheelLockRef = useRef<number | null>(null);
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
   const [activeSelection, setActiveSelection] = useState<SourceSelection | null>(null);
   const [noteMode, setNoteMode] = useState(false);
   const [noteText, setNoteText] = useState('');
   const [readingPanelOpen, setReadingPanelOpen] = useState(false);
-  const [chapterRatio, setChapterRatio] = useState(0);
+  const [pageStarts, setPageStarts] = useState<number[]>([]);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [trackPosition, setTrackPosition] = useState(-100);
+  const [trackAnimating, setTrackAnimating] = useState(false);
 
   const learner = useMemo(() => scale.fromSlider(sliderLevel), [scale, sliderLevel]);
   const chapters = doc.chapters.length
@@ -151,8 +242,6 @@ export function Reader({
       }) as CSSProperties,
     [readingPrefs],
   );
-  const progressPercent = Math.round(chapterRatio * 100);
-  const remainingMinutes = Math.ceil((chapterWordCount * (1 - chapterRatio)) / 200);
   const tokenByStart = useMemo(() => {
     const map = new Map<number, Token>();
     for (const token of chapterTokens) {
@@ -168,6 +257,31 @@ export function Reader({
     }
     return [...ids];
   }, [chapterTokens]);
+
+  const renderCtx = useMemo<RenderTokensContext>(
+    () => ({ annotations, imageUrls, knownLemmas, learner, scale, xray }),
+    [annotations, imageUrls, knownLemmas, learner, scale, xray],
+  );
+  const effectivePageStarts = useMemo(
+    () => (pageStarts.length ? pageStarts : chapterTokens[0] ? [chapterTokens[0].start] : []),
+    [chapterTokens, pageStarts],
+  );
+  const pageCount = Math.max(1, effectivePageStarts.length);
+  const safePageIndex = Math.max(0, Math.min(pageCount - 1, pageIndex));
+  const chapterRatio = chapterTokens.length ? (safePageIndex + 1) / pageCount : 1;
+  const progressPercent = Math.round(chapterRatio * 100);
+  const remainingMinutes = Math.ceil((chapterWordCount * (1 - chapterRatio)) / 200);
+  const pageWindow = useMemo(
+    () => [safePageIndex - 1, safePageIndex, safePageIndex + 1],
+    [safePageIndex],
+  );
+  const pageTokens = useMemo(
+    () =>
+      pageWindow.map((index) =>
+        index >= 0 && index < pageCount ? tokensForPage(chapterTokens, effectivePageStarts, index) : [],
+      ),
+    [chapterTokens, effectivePageStarts, pageCount, pageWindow],
+  );
 
   useEffect(() => {
     const urls = imageUrlsRef.current;
@@ -197,32 +311,58 @@ export function Reader({
   }, [doc.id, imageAssetIds, storage]);
 
   useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const frame = window.requestAnimationFrame(() => {
-      el.scrollTop = initialScrollOffset;
-      setChapterRatio(scrollRatio(el));
-      const offset = topVisibleOffset(el);
-      if (offset != null) onVisibleOffsetChange(offset);
+    currentPageStartRef.current = initialScrollOffset;
+    maxPercentRef.current = Math.round((safeChapterIndex / chapters.length) * 100);
+    pendingTurnRef.current = null;
+    setPageStarts([]);
+    setPageIndex(0);
+    setTrackAnimating(false);
+    setTrackPosition(-100);
+  }, [chapters.length, doc.id, initialScrollOffset, safeChapterIndex]);
+
+  useLayoutEffect(() => {
+    const reader = readerRef.current;
+    const measureBox = measureRef.current;
+    if (!reader || !measureBox || chapterTokens.length === 0) {
+      setPageStarts([]);
+      return;
+    }
+
+    let frame: number | null = null;
+    const measure = () => {
+      const starts = measurePageStarts(measureBox, chapterTokens, {
+        pageHeightPx: Math.max(1, reader.clientHeight),
+        renderTokens: (tokens) => createMeasureNodes(tokens, renderCtx),
+      });
+      const retainedOffset = currentPageStartRef.current || chapterTokens[0]?.start || 0;
+      setPageStarts(starts);
+      setPageIndex(pageRangeForOffset(starts, retainedOffset));
+      pendingTurnRef.current = null;
+      setTrackAnimating(false);
+      setTrackPosition(-100);
+    };
+
+    measure();
+    const resizeObserver = new ResizeObserver(() => {
+      if (frame != null) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(measure);
     });
-    return () => window.cancelAnimationFrame(frame);
-  }, [doc.id, safeChapterIndex, initialScrollOffset, onVisibleOffsetChange]);
+    resizeObserver.observe(reader);
+    return () => {
+      resizeObserver.disconnect();
+      if (frame != null) cancelAnimationFrame(frame);
+    };
+  }, [chapterTokens, readingPrefs, renderCtx]);
 
   useEffect(() => {
-    const el = scrollRef.current;
-    if (!el || !jumpTarget) return;
-    const frame = window.requestAnimationFrame(() => {
-      const exact = el.querySelector<HTMLElement>(`[data-start="${jumpTarget.offset}"]`);
-      const target =
-        exact ??
-        [...el.querySelectorAll<HTMLElement>('[data-start]')].find(
-          (node) => Number(node.dataset.start) >= jumpTarget.offset,
-        );
-      target?.scrollIntoView({ block: 'center' });
-      onJumpComplete();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [jumpTarget, onJumpComplete]);
+    if (!jumpTarget || effectivePageStarts.length === 0) return;
+    const nextPage = pageRangeForOffset(effectivePageStarts, jumpTarget.offset);
+    currentPageStartRef.current = jumpTarget.offset;
+    setPageIndex(nextPage);
+    setTrackAnimating(false);
+    setTrackPosition(-100);
+    onJumpComplete();
+  }, [effectivePageStarts, jumpTarget, onJumpComplete]);
 
   useEffect(() => {
     if (!readingPanelOpen) return;
@@ -232,6 +372,12 @@ export function Reader({
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [readingPanelOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (wheelLockRef.current != null) clearTimeout(wheelLockRef.current);
+    };
+  }, []);
 
   const openLookup = useCallback(
     (target: EventTarget | null) => {
@@ -249,6 +395,10 @@ export function Reader({
 
   const onLookupClick = useCallback(
     (e: MouseEvent<HTMLElement>) => {
+      if (suppressLookupRef.current) {
+        suppressLookupRef.current = false;
+        return;
+      }
       if (hasActiveTextSelection()) return;
       openLookup(e.target);
     },
@@ -264,106 +414,157 @@ export function Reader({
     [openLookup],
   );
 
-  const nodes = useMemo(() => {
-    return chapterTokens.map((t) => {
-      if (t.kind === 'image') {
-        const src = t.assetId ? imageUrls[t.assetId] : undefined;
-        return (
-          <figure key={t.id} className="reader-image" data-start={t.start}>
-            {src ? <img src={src} alt="" loading="lazy" /> : <div className="image-placeholder" />}
-          </figure>
-        );
+  const clearTransientUi = useCallback(() => {
+    onPageTurn();
+    setReadingPanelOpen(false);
+    setActiveSelection(null);
+    setNoteMode(false);
+    setNoteText('');
+    window.getSelection()?.removeAllRanges();
+  }, [onPageTurn]);
+
+  const turnPage = useCallback(
+    (delta: -1 | 1) => {
+      if (trackAnimating) return;
+      clearTransientUi();
+      if (delta < 0 && safePageIndex === 0) {
+        onChapterChange(Math.max(0, safeChapterIndex - 1));
+        return;
       }
-      if (t.kind === 'punct') {
-        const userHighlighted = annotations.some((annotation) => intersectsRange(t, annotation));
-        return (
-          <span
-            key={t.id}
-            className={userHighlighted ? 'punct user-highlight' : 'punct'}
-            data-start={t.start}
-          >
-            {t.surface}
-          </span>
-        );
-      }
-      if (t.kind !== 'word') {
-        return (
-          <span key={t.id} data-start={t.start}>
-            {t.surface}
-          </span>
-        );
+      if (delta > 0 && safePageIndex >= pageCount - 1) {
+        onChapterChange(Math.min(chapters.length - 1, safeChapterIndex + 1));
+        return;
       }
 
-      const userHighlighted = annotations.some((annotation) => intersectsRange(t, annotation));
-      const marked = !xray.enabled && shouldHighlight(t, learner, scale, knownLemmas);
-      const bucket = xray.buckets[bucketOf(t.band)];
-      const style = xray.enabled && bucket?.visible ? { color: bucket.color } : undefined;
-      const bandLabel = t.band == null ? 'OOV' : `${t.band}k`;
-      const className = ['word', marked ? 'marked' : '', userHighlighted ? 'user-highlight' : '']
-        .filter(Boolean)
-        .join(' ');
-      return (
-        <span
-          key={t.id}
-          className={className}
-          data-start={t.start}
-          role="button"
-          tabIndex={0}
-          title={`${bandLabel} · 点击查词`}
-          style={style}
-        >
-          {t.surface}
-        </span>
-      );
-    });
-  }, [annotations, chapterTokens, imageUrls, learner, scale, knownLemmas, xray]);
+      pendingTurnRef.current = delta;
+      setTrackAnimating(true);
+      requestAnimationFrame(() => setTrackPosition(delta > 0 ? -200 : 0));
+    },
+    [
+      chapters.length,
+      clearTransientUi,
+      onChapterChange,
+      pageCount,
+      safeChapterIndex,
+      safePageIndex,
+      trackAnimating,
+    ],
+  );
 
-  // 进度：按章节内滚动比例合成整书百分比，单调上报，节流。
+  const finishTrackTurn = useCallback(() => {
+    const delta = pendingTurnRef.current;
+    if (delta == null) return;
+    pendingTurnRef.current = null;
+    setTrackAnimating(false);
+    setPageIndex((index) => Math.max(0, Math.min(pageCount - 1, index + delta)));
+    setTrackPosition(-100);
+  }, [pageCount]);
+
+  const onReaderKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        turnPage(-1);
+      }
+      if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        turnPage(1);
+      }
+    },
+    [turnPage],
+  );
+
+  const onPointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    pointerStartRef.current = { x: event.clientX, y: event.clientY };
+  }, []);
+
+  const onPointerUp = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      const start = pointerStartRef.current;
+      pointerStartRef.current = null;
+      if (!start) return;
+      const dx = event.clientX - start.x;
+      const dy = event.clientY - start.y;
+      if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.3) return;
+      suppressLookupRef.current = true;
+      turnPage(dx < 0 ? 1 : -1);
+    },
+    [turnPage],
+  );
+
+  const onReaderWheel = useCallback(
+    (event: WheelEvent<HTMLDivElement>) => {
+      if (Math.abs(event.deltaX) < 40 || Math.abs(event.deltaX) < Math.abs(event.deltaY)) return;
+      event.preventDefault();
+      if (wheelLockRef.current != null) return;
+      turnPage(event.deltaX > 0 ? 1 : -1);
+      wheelLockRef.current = window.setTimeout(() => {
+        wheelLockRef.current = null;
+      }, 450);
+    },
+    [turnPage],
+  );
+
   useEffect(() => {
-    maxPercentRef.current = Math.round((safeChapterIndex / chapters.length) * 100);
-    const el = scrollRef.current;
-    if (!el) return;
-    setChapterRatio(scrollRatio(el));
-    let timer: number | null = null;
-    const handler = () => {
-      setChapterRatio(scrollRatio(el));
-      if (timer != null) return;
-      timer = window.setTimeout(() => {
-        timer = null;
-        const ratio = scrollRatio(el);
-        const percent = Math.round(((safeChapterIndex + ratio) / chapters.length) * 100);
-        const tokenIndex = Math.round(ratio * Math.max(0, chapterTokens.length - 1));
-        const maxTokenId = chapterTokens[tokenIndex]?.id ?? startTokenId;
-        const offset = topVisibleOffset(el);
-        if (offset != null) onVisibleOffsetChange(offset);
-        onResumeChange({ chapterIndex: safeChapterIndex, scrollOffset: el.scrollTop });
-        if (percent > maxPercentRef.current) {
-          maxPercentRef.current = percent;
-          onProgress(maxTokenId, percent);
-        }
-      }, 1500);
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      ) {
+        return;
+      }
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        turnPage(-1);
+      }
+      if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        turnPage(1);
+      }
     };
-    el.addEventListener('scroll', handler, { passive: true });
-    if (el.scrollHeight <= el.clientHeight) {
-      const percent = Math.round(((safeChapterIndex + 1) / chapters.length) * 100);
-      onProgress(chapterTokens.at(-1)?.id ?? startTokenId, percent);
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [turnPage]);
+
+  const renderedPages = useMemo(
+    () => pageTokens.map((tokens) => renderTokens(tokens, renderCtx)),
+    [pageTokens, renderCtx],
+  );
+
+  useEffect(() => {
+    if (effectivePageStarts.length === 0) return;
+    const offset = effectivePageStarts[safePageIndex] ?? chapterTokens[0]?.start ?? 0;
+    currentPageStartRef.current = offset;
+    onVisibleOffsetChange(offset);
+    onResumeChange({ chapterIndex: safeChapterIndex, scrollOffset: offset });
+
+    const percent = Math.round(((safeChapterIndex + chapterRatio) / chapters.length) * 100);
+    const currentTokens = pageTokens[1] ?? [];
+    const maxTokenId = currentTokens[0]?.id ?? startTokenId;
+    if (percent > maxPercentRef.current) {
+      maxPercentRef.current = percent;
+      onProgress(maxTokenId, percent);
     }
-    return () => {
-      el.removeEventListener('scroll', handler);
-      if (timer != null) clearTimeout(timer);
-    };
   }, [
     chapterTokens,
+    chapterRatio,
     chapters.length,
+    effectivePageStarts,
     onProgress,
     onResumeChange,
     onVisibleOffsetChange,
+    pageTokens,
     safeChapterIndex,
+    safePageIndex,
     startTokenId,
   ]);
 
   const updateSelection = () => {
-    const el = scrollRef.current;
+    const el = readerRef.current;
     if (!el) return;
     const selected = selectionToSourceRange(el, doc.source);
     setActiveSelection(selected);
@@ -387,6 +588,8 @@ export function Reader({
 
   const prev = () => onChapterChange(Math.max(0, safeChapterIndex - 1));
   const next = () => onChapterChange(Math.min(chapters.length - 1, safeChapterIndex + 1));
+  const canTurnPrev = safePageIndex > 0 || safeChapterIndex > 0;
+  const canTurnNext = safePageIndex < pageCount - 1 || safeChapterIndex < chapters.length - 1;
 
   return (
     <div className="reader-wrap" style={readerStyle}>
@@ -435,18 +638,53 @@ export function Reader({
       </div>
       <div
         className="reader"
-        ref={scrollRef}
+        ref={readerRef}
+        tabIndex={0}
+        onKeyDown={onReaderKeyDown}
         onMouseUp={() => window.setTimeout(updateSelection, 0)}
         onKeyUp={updateSelection}
+        onPointerDown={onPointerDown}
+        onPointerUp={onPointerUp}
+        onWheel={onReaderWheel}
       >
-        <article
-          className="reader-page"
-          lang="en"
-          onClick={onLookupClick}
-          onKeyDown={onLookupKeyDown}
+        <button
+          type="button"
+          className="page-gutter page-gutter-left"
+          aria-label="上一页"
+          disabled={!canTurnPrev}
+          onClick={() => turnPage(-1)}
+        />
+        <div
+          className={trackAnimating ? 'page-track animating' : 'page-track'}
+          style={{ transform: `translateX(${trackPosition}%)` }}
+          onTransitionEnd={finishTrackTurn}
         >
-          {nodes}
-        </article>
+          {pageWindow.map((index, slot) => (
+            <article
+              key={`${safeChapterIndex}:${index}`}
+              className="reader-page page-panel"
+              lang="en"
+              aria-hidden={index !== safePageIndex}
+              onClick={onLookupClick}
+              onKeyDown={onLookupKeyDown}
+            >
+              {renderedPages[slot]}
+            </article>
+          ))}
+        </div>
+        <button
+          type="button"
+          className="page-gutter page-gutter-right"
+          aria-label="下一页"
+          disabled={!canTurnNext}
+          onClick={() => turnPage(1)}
+        />
+        <article
+          ref={measureRef}
+          className="reader-page reader-measure-page"
+          lang="en"
+          aria-hidden="true"
+        />
         {activeSelection && (
           <div
             className="selection-toolbar"
