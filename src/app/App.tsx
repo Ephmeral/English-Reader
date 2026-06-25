@@ -6,8 +6,14 @@ import type { Document } from '../core/model/token';
 import { BandLevelScale, SLIDER_DEFAULT } from '../core/model/level';
 import { normalizeXraySettings } from '../core/model/buckets';
 import type { XraySettings } from '../core/model/buckets';
-import { createDeps, DEFAULT_DICT_ENABLED, SETTINGS_KEYS } from './deps';
-import type { DictEnabled } from './deps';
+import {
+  createDeps,
+  DEFAULT_DICT_ENABLED,
+  DEFAULT_READING_PREFS,
+  DEFAULT_THEME,
+  SETTINGS_KEYS,
+} from './deps';
+import type { DictEnabled, ReadingPrefs, Theme } from './deps';
 import { DepsProvider, useDeps } from './context';
 import { upsertVocabOnClick } from './vocab';
 import {
@@ -69,6 +75,9 @@ function Shell() {
   const [sliderLevel, setSliderLevel] = useState(SLIDER_DEFAULT);
   const [dictEnabled, setDictEnabled] = useState<DictEnabled>(DEFAULT_DICT_ENABLED);
   const [xray, setXray] = useState<XraySettings>(() => normalizeXraySettings());
+  const [readingPrefs, setReadingPrefs] = useState<ReadingPrefs>(DEFAULT_READING_PREFS);
+  const [theme, setTheme] = useState<Theme>(DEFAULT_THEME);
+  const [focusMode, setFocusMode] = useState(false);
   const [sel, setSel] = useState<WordClick | null>(null);
   const [selectedPriorComprehension, setSelectedPriorComprehension] = useState<
     Exclude<Comprehension, 'known'> | undefined
@@ -121,15 +130,50 @@ function Shell() {
     deps.storage.getSetting<Partial<XraySettings>>(SETTINGS_KEYS.xray).then((value) => {
       setXray(normalizeXraySettings(value));
     });
+    deps.storage.getSetting<Partial<ReadingPrefs>>(SETTINGS_KEYS.readingPrefs).then((value) => {
+      if (value) setReadingPrefs({ ...DEFAULT_READING_PREFS, ...value });
+    });
+    deps.storage.getSetting<Theme>(SETTINGS_KEYS.theme).then((value) => {
+      if (value === 'day' || value === 'sepia' || value === 'night') setTheme(value);
+    });
     const onUnload = () => void deps.logger.logSessionEnd();
     window.addEventListener('beforeunload', onUnload);
     return () => window.removeEventListener('beforeunload', onUnload);
   }, [deps]);
 
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
+  useEffect(() => {
+    if (!focusMode) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setFocusMode(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [focusMode]);
+
   const changeSlider = useCallback(
     (v: number) => {
       setSliderLevel(v);
       void deps.storage.setSetting(SETTINGS_KEYS.sliderLevel, v);
+    },
+    [deps],
+  );
+
+  const changeReadingPrefs = useCallback(
+    (next: ReadingPrefs) => {
+      setReadingPrefs(next);
+      void deps.storage.setSetting(SETTINGS_KEYS.readingPrefs, next);
+    },
+    [deps],
+  );
+
+  const changeTheme = useCallback(
+    (next: Theme) => {
+      setTheme(next);
+      void deps.storage.setSetting(SETTINGS_KEYS.theme, next);
     },
     [deps],
   );
@@ -327,7 +371,10 @@ function Shell() {
         )}
         {view === 'reader' &&
           (doc ? (
-            <div className="reader-shell">
+            <div className={focusMode ? 'reader-shell focus' : 'reader-shell'}>
+              <button className="focus-exit" onClick={() => setFocusMode(false)}>
+                退出专注
+              </button>
               <aside className="reader-side">
                 <Toc doc={doc} currentChapter={chapterIndex} onSelect={selectChapter} />
                 <AnnotationsPanel
@@ -352,6 +399,8 @@ function Shell() {
                   annotations={annotations}
                   knownLemmas={knownLemmas}
                   xray={xray}
+                  readingPrefs={readingPrefs}
+                  theme={theme}
                   jumpTarget={jumpTarget}
                   onChapterChange={selectChapter}
                   onWordClick={onWordClick}
@@ -361,6 +410,9 @@ function Shell() {
                   onCreateRangeAnnotation={(range) => void saveRangeAnnotation(range)}
                   onJumpComplete={() => setJumpTarget(null)}
                   onXrayEnabledChange={changeXrayEnabled}
+                  onReadingPrefsChange={changeReadingPrefs}
+                  onThemeChange={changeTheme}
+                  onToggleFocus={() => setFocusMode(true)}
                 />
               </section>
             </div>

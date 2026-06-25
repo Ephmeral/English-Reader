@@ -34,6 +34,22 @@ export const DEFAULT_DICT_ENABLED: DictEnabled = {
   ecdict: false,
 };
 
+export interface ReadingPrefs {
+  measureCh: number;
+  fontPx: number;
+  lineHeight: number;
+}
+
+export const DEFAULT_READING_PREFS: ReadingPrefs = {
+  measureCh: 70,
+  fontPx: 19,
+  lineHeight: 1.8,
+};
+
+export type Theme = 'day' | 'sepia' | 'night';
+
+export const DEFAULT_THEME: Theme = 'day';
+
 export interface Deps {
   parser: SourceParser;
   lexicon: TableLexicon;
@@ -51,6 +67,8 @@ export const SETTINGS_KEYS = {
   sliderLevel: 'sliderLevel',
   dictEnabled: 'dictEnabled',
   xray: 'xray',
+  readingPrefs: 'readingPrefs',
+  theme: 'theme',
 } as const;
 
 export function createDeps(): Deps {

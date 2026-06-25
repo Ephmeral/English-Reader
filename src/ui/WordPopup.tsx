@@ -1,7 +1,7 @@
 // 点词释义浮层（规格 §3 阶段3 + 阶段4 理解度）。
 // loading/错误/重试态；无 key 引导设置；i+1 英文释义；理解程度标记。
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { Document, Token } from '../core/model/token';
 import type { LevelScale } from '../core/model/level';
 import { sentenceAround } from '../core/model/context';
@@ -19,6 +19,11 @@ interface LookupEntry {
   entry: DictEntry;
 }
 
+interface PopupPosition {
+  top: number;
+  left: number;
+}
+
 const MARKS: { mark: Comprehension; label: string }[] = [
   { mark: 'unknown', label: '不认识' },
   { mark: 'fuzzy', label: '模糊' },
@@ -29,6 +34,22 @@ function isDictionaryEnabled(enabled: DictEnabled, dictionaryId: string): boolea
   if (dictionaryId === 'wordnet') return enabled.wordnet;
   if (dictionaryId === 'ecdict') return enabled.ecdict;
   return false;
+}
+
+function initialPopupPosition(rect: DOMRect): PopupPosition {
+  const fallbackHeight = Math.min(360, window.innerHeight - 24);
+  return {
+    top: Math.min(rect.bottom + 8, Math.max(8, window.innerHeight - fallbackHeight - 8)),
+    left: Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - 340)),
+  };
+}
+
+function canSpeak(): boolean {
+  return typeof window !== 'undefined' && 'speechSynthesis' in window;
+}
+
+function cancelSpeech() {
+  if (canSpeak()) window.speechSynthesis.cancel();
 }
 
 export function WordPopup({
@@ -67,10 +88,14 @@ export function WordPopup({
   const [noKey, setNoKey] = useState(false);
   const [mark, setMark] = useState<Comprehension>(existingComprehension ?? 'unknown');
   const abortRef = useRef<AbortController | null>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<PopupPosition>(() => initialPopupPosition(rect));
 
   const lemma = token.lemma ?? token.surface.toLowerCase();
   const level = scale.fromSlider(sliderLevel);
   const bandLabel = token.band == null ? 'OOV' : `${token.band}k`;
+  const sentence = sentenceAround(doc, token);
+  const speechAvailable = canSpeak();
   const enabledDictionaryCount = deps.dictionaries.filter((dictionary) =>
     isDictionaryEnabled(dictEnabled, dictionary.id),
   ).length;
@@ -133,8 +158,61 @@ export function WordPopup({
   }, [lemma, sliderLevel, token.id]);
 
   useEffect(() => {
-    return () => abortRef.current?.abort();
+    return () => {
+      abortRef.current?.abort();
+      cancelSpeech();
+    };
   }, []);
+
+  const closePopup = useCallback(() => {
+    cancelSpeech();
+    onClose();
+  }, [onClose]);
+
+  const speak = useCallback((text: string) => {
+    if (!canSpeak() || !text.trim()) return;
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'en-US';
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closePopup();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [closePopup]);
+
+  useLayoutEffect(() => {
+    const popup = popupRef.current;
+    if (!popup) return;
+    const popupRect = popup.getBoundingClientRect();
+    const popupH = popupRect.height;
+    const popupW = popupRect.width;
+    const belowSpace = window.innerHeight - rect.bottom - 8;
+    const belowTop = rect.bottom + 8;
+    const aboveTop = rect.top - popupH - 8;
+    const maxTop = Math.max(8, window.innerHeight - popupH - 8);
+    const top = Math.min(Math.max(8, belowSpace >= popupH ? belowTop : aboveTop), maxTop);
+    const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - popupW - 8));
+    setPosition((current) =>
+      Math.abs(current.top - top) < 1 && Math.abs(current.left - left) < 1
+        ? current
+        : { top, left },
+    );
+  }, [
+    aiStatus,
+    dictionaryEntries,
+    dictionaryStatus,
+    errMsg,
+    explanation,
+    noKey,
+    rect.bottom,
+    rect.left,
+    rect.top,
+  ]);
 
   const requestExplanation = useCallback(async () => {
     abortRef.current?.abort();
@@ -148,7 +226,7 @@ export function WordPopup({
     try {
       const ai = await deps.makeAIService();
       const result = await ai.explain(
-        { word: lemma, level, context: sentenceAround(doc, token) },
+        { word: lemma, level, context: sentence },
         ac.signal,
       );
       setExplanation(result.explanation);
@@ -168,7 +246,7 @@ export function WordPopup({
       setErrMsg(e instanceof Error ? e.message : String(e));
       setAIStatus('error');
     }
-  }, [deps, doc, lemma, level, token]);
+  }, [deps, lemma, level, sentence]);
 
   const choose = useCallback(
     async (m: Comprehension) => {
@@ -179,18 +257,30 @@ export function WordPopup({
     [deps, doc, onVocabChange, token],
   );
 
-  // 定位：词的下方，水平/垂直夹到视口内
-  const top = Math.min(rect.bottom + 8, window.innerHeight - 360);
-  const left = Math.min(Math.max(8, rect.left), window.innerWidth - 340);
-
   return (
     <>
-      <div className="popup-backdrop" onClick={onClose} />
-      <div className="popup" style={{ top, left }} role="dialog" aria-label={`查词 ${token.surface}`}>
+      <div className="popup-backdrop" onClick={closePopup} />
+      <div
+        ref={popupRef}
+        className="popup"
+        style={position}
+        role="dialog"
+        aria-label={`查词 ${token.surface}`}
+      >
         <div className="popup-head">
           <span className="popup-word">{token.surface}</span>
+          {speechAvailable && (
+            <button
+              type="button"
+              className="speech-button"
+              onClick={() => speak(token.surface)}
+              aria-label={`朗读 ${token.surface}`}
+            >
+              🔊
+            </button>
+          )}
           <span className="popup-band">{bandLabel}</span>
-          <button className="popup-close" onClick={onClose} aria-label="关闭">
+          <button className="popup-close" onClick={closePopup} aria-label="关闭">
             ×
           </button>
         </div>
@@ -233,7 +323,7 @@ export function WordPopup({
           ))}
 
           <div className="ai-panel">
-            <button onClick={requestExplanation} disabled={aiStatus === 'loading'}>
+            <button type="button" onClick={requestExplanation} disabled={aiStatus === 'loading'}>
               用更简单的英文解释
             </button>
             {aiStatus === 'loading' && <div className="muted">正在生成…</div>}
@@ -242,13 +332,24 @@ export function WordPopup({
               <div className="error">
                 <p>{noKey ? '尚未配置 API key。' : `解释失败：${errMsg}`}</p>
                 {noKey ? (
-                  <button onClick={onGoSettings}>去设置</button>
+                  <button type="button" onClick={onGoSettings}>
+                    去设置
+                  </button>
                 ) : (
-                  <button onClick={requestExplanation}>重试</button>
+                  <button type="button" onClick={requestExplanation}>
+                    重试
+                  </button>
                 )}
               </div>
             )}
           </div>
+          {speechAvailable && (
+            <div className="popup-speech-actions">
+              <button type="button" className="speech-button" onClick={() => speak(sentence)}>
+                朗读例句
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="popup-marks">
@@ -257,6 +358,7 @@ export function WordPopup({
             <button
               key={m.mark}
               className={mark === m.mark ? 'mark active' : 'mark'}
+              type="button"
               onClick={() => choose(m.mark)}
             >
               {m.label}

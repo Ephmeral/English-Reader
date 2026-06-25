@@ -2,7 +2,7 @@
 // 埋 reading_progress；EPUB 图片从 Storage asset 加载。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent, MouseEvent } from 'react';
+import type { CSSProperties, KeyboardEvent, MouseEvent } from 'react';
 import type { Annotation } from '../core/model/annotation';
 import type { Document, Token } from '../core/model/token';
 import type { LevelScale } from '../core/model/level';
@@ -10,8 +10,11 @@ import { bucketOf } from '../core/model/buckets';
 import type { XraySettings } from '../core/model/buckets';
 import { shouldHighlight } from '../core/model/marking';
 import type { Storage } from '../core/storage/storage';
+import { DEFAULT_READING_PREFS } from '../app/deps';
+import type { ReadingPrefs, Theme } from '../app/deps';
 import type { SourceSelection } from './selection';
 import { selectionToSourceRange } from './selection';
+import { ReadingPanel } from './ReadingPanel';
 
 export interface WordClick {
   token: Token;
@@ -47,6 +50,11 @@ function hasActiveTextSelection(): boolean {
   return Boolean(selection && !selection.isCollapsed);
 }
 
+function scrollRatio(reader: HTMLElement): number {
+  const denom = reader.scrollHeight - reader.clientHeight;
+  return denom > 0 ? Math.min(1, Math.max(0, reader.scrollTop / denom)) : 1;
+}
+
 export function Reader({
   doc,
   storage,
@@ -57,6 +65,8 @@ export function Reader({
   annotations,
   knownLemmas,
   xray,
+  readingPrefs,
+  theme,
   jumpTarget,
   onChapterChange,
   onWordClick,
@@ -66,6 +76,9 @@ export function Reader({
   onCreateRangeAnnotation,
   onJumpComplete,
   onXrayEnabledChange,
+  onReadingPrefsChange,
+  onThemeChange,
+  onToggleFocus,
 }: {
   doc: Document;
   storage: Storage;
@@ -76,6 +89,8 @@ export function Reader({
   annotations: Annotation[];
   knownLemmas: ReadonlySet<string>;
   xray: XraySettings;
+  readingPrefs: ReadingPrefs;
+  theme: Theme;
   jumpTarget: JumpTarget | null;
   onChapterChange: (index: number) => void;
   onWordClick: (c: WordClick) => void;
@@ -90,6 +105,9 @@ export function Reader({
   }) => void;
   onJumpComplete: () => void;
   onXrayEnabledChange: (enabled: boolean) => void;
+  onReadingPrefsChange: (prefs: ReadingPrefs) => void;
+  onThemeChange: (theme: Theme) => void;
+  onToggleFocus: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const maxPercentRef = useRef(0);
@@ -98,6 +116,8 @@ export function Reader({
   const [activeSelection, setActiveSelection] = useState<SourceSelection | null>(null);
   const [noteMode, setNoteMode] = useState(false);
   const [noteText, setNoteText] = useState('');
+  const [readingPanelOpen, setReadingPanelOpen] = useState(false);
+  const [chapterRatio, setChapterRatio] = useState(0);
 
   const learner = useMemo(() => scale.fromSlider(sliderLevel), [scale, sliderLevel]);
   const chapters = doc.chapters.length
@@ -112,6 +132,21 @@ export function Reader({
     () => doc.tokens.slice(startTokenId, endTokenId),
     [doc.tokens, startTokenId, endTokenId],
   );
+  const chapterWordCount = useMemo(
+    () => chapterTokens.filter((token) => token.kind === 'word').length,
+    [chapterTokens],
+  );
+  const readerStyle = useMemo(
+    () =>
+      ({
+        '--reader-font': `${readingPrefs.fontPx}px`,
+        '--reader-line': `${readingPrefs.lineHeight}`,
+        '--reader-measure': `${readingPrefs.measureCh}ch`,
+      }) as CSSProperties,
+    [readingPrefs],
+  );
+  const progressPercent = Math.round(chapterRatio * 100);
+  const remainingMinutes = Math.ceil((chapterWordCount * (1 - chapterRatio)) / 200);
   const tokenByStart = useMemo(() => {
     const map = new Map<number, Token>();
     for (const token of chapterTokens) {
@@ -160,6 +195,7 @@ export function Reader({
     if (!el) return;
     const frame = window.requestAnimationFrame(() => {
       el.scrollTop = initialScrollOffset;
+      setChapterRatio(scrollRatio(el));
       const offset = topVisibleOffset(el);
       if (offset != null) onVisibleOffsetChange(offset);
     });
@@ -181,6 +217,15 @@ export function Reader({
     });
     return () => window.cancelAnimationFrame(frame);
   }, [jumpTarget, onJumpComplete]);
+
+  useEffect(() => {
+    if (!readingPanelOpen) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') setReadingPanelOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [readingPanelOpen]);
 
   const openLookup = useCallback(
     (target: EventTarget | null) => {
@@ -272,13 +317,14 @@ export function Reader({
     maxPercentRef.current = Math.round((safeChapterIndex / chapters.length) * 100);
     const el = scrollRef.current;
     if (!el) return;
+    setChapterRatio(scrollRatio(el));
     let timer: number | null = null;
     const handler = () => {
+      setChapterRatio(scrollRatio(el));
       if (timer != null) return;
       timer = window.setTimeout(() => {
         timer = null;
-        const denom = el.scrollHeight - el.clientHeight;
-        const ratio = denom > 0 ? Math.min(1, Math.max(0, el.scrollTop / denom)) : 1;
+        const ratio = scrollRatio(el);
         const percent = Math.round(((safeChapterIndex + ratio) / chapters.length) * 100);
         const tokenIndex = Math.round(ratio * Math.max(0, chapterTokens.length - 1));
         const maxTokenId = chapterTokens[tokenIndex]?.id ?? startTokenId;
@@ -337,15 +383,15 @@ export function Reader({
   const next = () => onChapterChange(Math.min(chapters.length - 1, safeChapterIndex + 1));
 
   return (
-    <div className="reader-wrap">
+    <div className="reader-wrap" style={readerStyle}>
       <div className="chapter-bar">
-        <button onClick={prev} disabled={safeChapterIndex === 0}>
+        <button type="button" onClick={prev} disabled={safeChapterIndex === 0}>
           上一章
         </button>
         <span className="muted">
           {safeChapterIndex + 1} / {chapters.length}
         </span>
-        <button onClick={next} disabled={safeChapterIndex >= chapters.length - 1}>
+        <button type="button" onClick={next} disabled={safeChapterIndex >= chapters.length - 1}>
           下一章
         </button>
         <label className="xray-toggle">
@@ -356,6 +402,30 @@ export function Reader({
           />
           x-ray
         </label>
+        <div className="reading-panel-anchor">
+          <button
+            type="button"
+            aria-expanded={readingPanelOpen}
+            onClick={() => setReadingPanelOpen((open) => !open)}
+          >
+            Aa
+          </button>
+          {readingPanelOpen && (
+            <>
+              <div className="reading-panel-backdrop" onClick={() => setReadingPanelOpen(false)} />
+              <ReadingPanel
+                prefs={readingPrefs}
+                theme={theme}
+                onPrefsChange={onReadingPrefsChange}
+                onThemeChange={onThemeChange}
+                onReset={() => onReadingPrefsChange(DEFAULT_READING_PREFS)}
+              />
+            </>
+          )}
+        </div>
+        <button type="button" onClick={onToggleFocus}>
+          专注
+        </button>
       </div>
       <div
         className="reader"
@@ -408,6 +478,12 @@ export function Reader({
             </button>
           </div>
         )}
+      </div>
+      <div className="reading-progress" aria-label="本章阅读进度">
+        <div className="reading-progress-track">
+          <i style={{ width: `${progressPercent}%` }} />
+        </div>
+        <span>本章约剩 {remainingMinutes} 分钟</span>
       </div>
     </div>
   );
