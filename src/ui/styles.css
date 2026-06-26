@@ -436,13 +436,26 @@ h6.blk-heading {
 }
 .word.marked.user-highlight {
   background: var(--user-highlight);
+  border-bottom-color: var(--marked-border);
+}
 .em-italic {
   font-style: italic;
 }
 .em-bold {
   font-weight: 700;
 }
-  border-bottom-color: var(--marked-border);
+.noteref {
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 0.72em;
+  font-weight: 700;
+  line-height: 0;
+  padding: 0 2px;
+  vertical-align: super;
+}
+.noteref:focus-visible {
+  outline: 2px solid var(--marked-border);
+  outline-offset: 2px;
 }
 .reader-image {
   margin: 18px auto;
@@ -703,6 +716,9 @@ h6.blk-heading {
   padding-right: 2px;
   font-size: 15px;
   line-height: 1.6;
+}
+.footnote-body {
+  white-space: pre-wrap;
 }
 .reinforcement {
   margin-bottom: 6px;

@@ -2,8 +2,9 @@
 // 一切先归一化成 Document 词元流——这是能复用到任何平台的核心资产。
 
 /** 词元种类。空白与换行单独成元，保证 surface 可逐字还原原文。
- *  v1.3 image：epub 图片占位，零宽（start===end、surface===''），不参与分级/点击。 */
-export type TokenKind = 'word' | 'punct' | 'space' | 'newline' | 'image';
+ *  v1.3 image：epub 图片占位，零宽（start===end、surface===''），不参与分级/点击。
+ *  v1.5 noteref：作者脚注标记，非 word，不参与分级/查词/coverage。 */
+export type TokenKind = 'word' | 'punct' | 'space' | 'newline' | 'image' | 'noteref';
 
 /** 归一化词元流中的一个单位。 */
 export interface Token {
@@ -27,6 +28,8 @@ export interface Token {
   band?: number | null;
   /** v1.3：仅 kind==='image' —— 指向该文档的 Asset（图片 Blob），见规格 §1.7。 */
   assetId?: string;
+  /** v1.5：仅 kind==='noteref' —— 指向 Document.footnotes。 */
+  footnoteId?: string;
 }
 
 export interface VocabProfile {
@@ -84,6 +87,13 @@ export interface Emphasis {
   style: EmphasisStyle;
 }
 
+export interface Footnote {
+  id: string;
+  anchorTokenId: number;
+  label: string;
+  body: string;
+}
+
 /** 平台无关的核心资产。所有功能只跟它打交道。 */
 export interface Document {
   /** 稳定 id（内容 hash 或 uuid，由实现决定，但需稳定可复现优先）。 */
@@ -98,5 +108,7 @@ export interface Document {
   blocks: Block[];
   /** v1.5：内联强调索引。只索引 source 范围，不改变 token / offsets。 */
   emphases: Emphasis[];
+  /** v1.5：作者脚注正文。正文不进入 source / tokens。 */
+  footnotes: Footnote[];
   meta: DocumentMeta;
 }

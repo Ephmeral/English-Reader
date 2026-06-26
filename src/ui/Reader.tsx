@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent, WheelEvent } from 'react';
 import type { Annotation } from '../core/model/annotation';
-import type { Block, Document, Emphasis, Token } from '../core/model/token';
+import type { Block, Document, Emphasis, Footnote, Token } from '../core/model/token';
 import type { LevelScale } from '../core/model/level';
 import { bucketOf } from '../core/model/buckets';
 import type { XraySettings } from '../core/model/buckets';
@@ -89,6 +89,19 @@ function intersectsRange(token: Token, annotation: Annotation): boolean {
 function hasActiveTextSelection(): boolean {
   const selection = window.getSelection();
   return Boolean(selection && !selection.isCollapsed);
+}
+
+function popupPositionForRect(rect: DOMRect): { top: number; left: number } {
+  const fallbackHeight = Math.min(320, window.innerHeight - 24);
+  return {
+    top: Math.min(rect.bottom + 8, Math.max(8, window.innerHeight - fallbackHeight - 8)),
+    left: Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - 340)),
+  };
+}
+
+interface ActiveFootnote {
+  footnote: Footnote;
+  position: { top: number; left: number };
 }
 
 interface RenderTokensContext {
@@ -202,6 +215,22 @@ function blockClassName(block: Block): string {
 }
 
 function renderToken(token: Token, ctx: RenderTokensContext) {
+  if (token.kind === 'noteref') {
+    return (
+      <sup
+        key={token.id}
+        className="noteref"
+        data-start={token.start}
+        data-footnote-id={token.footnoteId}
+        role="button"
+        tabIndex={0}
+        title="脚注"
+      >
+        {token.surface}
+      </sup>
+    );
+  }
+
   if (token.kind === 'image') {
     const src = token.assetId ? ctx.imageUrls[token.assetId] : undefined;
     return (
@@ -250,6 +279,14 @@ function renderTokens(tokens: readonly Token[], ctx: RenderTokensContext, blocks
 }
 
 function createMeasureTokenNode(token: Token, ctx: RenderTokensContext): Node {
+  if (token.kind === 'noteref') {
+    const sup = document.createElement('sup');
+    sup.className = 'noteref';
+    sup.dataset.start = String(token.start);
+    sup.textContent = token.surface;
+    return sup;
+  }
+
   if (token.kind === 'image') {
     const figure = document.createElement('figure');
     figure.className = 'reader-image';
@@ -385,6 +422,7 @@ export function Reader({
   const [activeSelection, setActiveSelection] = useState<SourceSelection | null>(null);
   const [noteMode, setNoteMode] = useState(false);
   const [noteText, setNoteText] = useState('');
+  const [activeFootnote, setActiveFootnote] = useState<ActiveFootnote | null>(null);
   const [readingPanelOpen, setReadingPanelOpen] = useState(false);
   const [pageStarts, setPageStarts] = useState<number[]>([]);
   const [paginationComplete, setPaginationComplete] = useState(false);
@@ -454,6 +492,12 @@ export function Reader({
   const documentBlocks = useMemo(() => doc.blocks ?? [], [doc.blocks]);
   const effectivePageStarts = useMemo(
     () => {
+  const documentFootnotes = useMemo(() => doc.footnotes ?? [], [doc.footnotes]);
+  const footnoteById = useMemo(() => {
+    const map = new Map<string, Footnote>();
+    for (const footnote of documentFootnotes) map.set(footnote.id, footnote);
+    return map;
+  }, [documentFootnotes]);
       if (pageStarts.length) return pageStarts;
       if (chapterTokens.length === 0) return [];
       const startIndex = firstTokenAtOrAfter(chapterTokens, initialOffset);
@@ -734,6 +778,20 @@ export function Reader({
 
   const openLookup = useCallback(
     (target: EventTarget | null) => {
+  const openFootnote = useCallback(
+    (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      const el = target.closest<HTMLElement>('[data-footnote-id]');
+      const footnoteId = el?.dataset.footnoteId;
+      if (!el || !footnoteId) return false;
+      const footnote = footnoteById.get(footnoteId);
+      if (!footnote) return false;
+      setActiveFootnote({ footnote, position: popupPositionForRect(el.getBoundingClientRect()) });
+      return true;
+    },
+    [footnoteById],
+  );
+
       if (!(target instanceof HTMLElement)) return;
       const el = target.closest<HTMLElement>('[data-start]');
       if (!el) return;
@@ -743,6 +801,7 @@ export function Reader({
       if (!token) return;
       onWordClick({ token, rect: el.getBoundingClientRect() });
     },
+      setActiveFootnote(null);
     [onWordClick, tokenByStart],
   );
 
@@ -755,7 +814,8 @@ export function Reader({
       if (hasActiveTextSelection()) return;
       openLookup(e.target);
     },
-    [openLookup],
+      if (openFootnote(e.target)) return;
+    [openFootnote, openLookup],
   );
 
   const onLookupKeyDown = useCallback(
@@ -764,7 +824,8 @@ export function Reader({
       e.preventDefault();
       openLookup(e.target);
     },
-    [openLookup],
+      if (openFootnote(e.target)) return;
+    [openFootnote, openLookup],
   );
 
   const clearTransientUi = useCallback(() => {
@@ -772,6 +833,7 @@ export function Reader({
     setReadingPanelOpen(false);
     setActiveSelection(null);
     setNoteMode(false);
+    setActiveFootnote(null);
     setNoteText('');
     window.getSelection()?.removeAllRanges();
   }, [onPageTurn]);
@@ -1110,6 +1172,33 @@ export function Reader({
           本章第 {currentPageNumber} / {paginationComplete ? pageCount : `${pageCount}+`} 页
         </span>
         <span>
+      {activeFootnote && (
+        <>
+          <div className="popup-backdrop" onClick={() => setActiveFootnote(null)} />
+          <div
+            className="popup footnote-popup"
+            style={{
+              top: activeFootnote.position.top,
+              left: activeFootnote.position.left,
+            }}
+          >
+            <div className="popup-head">
+              <span className="popup-word">脚注 {activeFootnote.footnote.label}</span>
+              <button
+                className="popup-close"
+                type="button"
+                onClick={() => setActiveFootnote(null)}
+                aria-label="关闭"
+              >
+                ×
+              </button>
+            </div>
+            <div className="popup-body footnote-body">
+              {activeFootnote.footnote.body || '没有脚注正文。'}
+            </div>
+          </div>
+        </>
+      )}
           {!paginationComplete
             ? `正在分页… 已可读 ${pageCount} 页`
             : remainingPages === 0

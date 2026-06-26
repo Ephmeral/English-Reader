@@ -15,10 +15,24 @@ export interface MarkdownEmphasis {
   style: EmphasisStyle;
 }
 
+export interface MarkdownNoteref {
+  id: string;
+  label: string;
+  start: number;
+  end: number;
+}
+
+export interface MarkdownFootnoteDefinition {
+  id: string;
+  body: string;
+}
+
 export interface NormalizedMarkdown {
   source: string;
   blocks: MarkdownBlock[];
   emphases: MarkdownEmphasis[];
+  noterefs: MarkdownNoteref[];
+  footnotes: MarkdownFootnoteDefinition[];
 }
 
 interface PendingBlock {
@@ -30,6 +44,7 @@ interface PendingBlock {
 interface NormalizedLine {
   text: string;
   emphases: MarkdownEmphasis[];
+  noterefs: MarkdownNoteref[];
 }
 
 interface NormalizedBlock {
@@ -46,18 +61,28 @@ function stripLinksAndCode(text: string): string {
   return text;
 }
 
-function collectInlineEmphasis(raw: string): NormalizedLine {
+function collectInlineMarkdown(raw: string): NormalizedLine {
   const text = stripLinksAndCode(raw);
   const emphases: MarkdownEmphasis[] = [];
-  const re = /(\*\*|__)([\s\S]+?)\1|(\*|_)([\s\S]+?)\3/g;
+  const noterefs: MarkdownNoteref[] = [];
+  const re = /\[\^([^\]]+)\]|(\*\*|__)([\s\S]+?)\2|(\*|_)([\s\S]+?)\4/g;
   let out = '';
   let cursor = 0;
   let match: RegExpExecArray | null;
 
   while ((match = re.exec(text)) !== null) {
     out += text.slice(cursor, match.index);
-    const content = match[2] ?? match[4] ?? '';
-    const style: EmphasisStyle = match[1] ? 'bold' : 'italic';
+    if (match[1]) {
+      const id = match[1];
+      const start = out.length;
+      out += id;
+      noterefs.push({ id, label: id, start, end: out.length });
+      cursor = match.index + match[0].length;
+      continue;
+    }
+
+    const content = match[3] ?? match[5] ?? '';
+    const style: EmphasisStyle = match[2] ? 'bold' : 'italic';
     const start = out.length;
     out += content;
     if (start < out.length) emphases.push({ start, end: out.length, style });
@@ -65,13 +90,13 @@ function collectInlineEmphasis(raw: string): NormalizedLine {
   }
 
   out += text.slice(cursor);
-  return { text: out, emphases };
+  return { text: out, emphases, noterefs };
 }
 
 function trimLine(line: NormalizedLine): NormalizedLine {
   const leading = line.text.match(/^\s*/)?.[0].length ?? 0;
   const trailing = line.text.length - (line.text.match(/\s*$/)?.[0].length ?? 0);
-  if (trailing <= leading) return { text: '', emphases: [] };
+  if (trailing <= leading) return { text: '', emphases: [], noterefs: [] };
 
   const emphases = line.emphases
     .map((emphasis) => ({
@@ -81,11 +106,19 @@ function trimLine(line: NormalizedLine): NormalizedLine {
     }))
     .filter((emphasis) => emphasis.start < emphasis.end);
 
-  return { text: line.text.slice(leading, trailing), emphases };
+  const noterefs = line.noterefs
+    .map((noteref) => ({
+      ...noteref,
+      start: Math.max(noteref.start, leading) - leading,
+      end: Math.min(noteref.end, trailing) - leading,
+    }))
+    .filter((noteref) => noteref.start < noteref.end);
+
+  return { text: line.text.slice(leading, trailing), emphases, noterefs };
 }
 
 function normalizeLine(raw: string): NormalizedLine {
-  return trimLine(collectInlineEmphasis(raw));
+  return trimLine(collectInlineMarkdown(raw));
 }
 
 function normalizeBlockLines(lines: readonly string[]): NormalizedLine[] {
@@ -95,6 +128,17 @@ function normalizeBlockLines(lines: readonly string[]): NormalizedLine[] {
 export function normalizeMarkdown(md: string): NormalizedMarkdown {
   let text = md.replace(/\r\n/g, '\n');
   text = text.replace(/^```[^\n]*\n([\s\S]*?)```/gm, (_m, code: string) => code);
+  const footnoteBodies = new Map<string, string>();
+  const bodyLines: string[] = [];
+
+  for (const raw of text.split('\n')) {
+    const definition = raw.match(/^\s{0,3}\[\^([^\]]+)\]:\s*(.*)$/);
+    if (definition) {
+      footnoteBodies.set(definition[1]!, normalizeLine(definition[2] ?? '').text);
+      continue;
+    }
+    bodyLines.push(raw);
+  }
 
   const blocks: NormalizedBlock[] = [];
   let pending: PendingBlock | null = null;
@@ -106,7 +150,7 @@ export function normalizeMarkdown(md: string): NormalizedMarkdown {
     pending = null;
   };
 
-  for (const raw of text.split('\n')) {
+  for (const raw of bodyLines) {
     if (/^\s*$/.test(raw) || /^\s{0,3}(?:[-*_]\s?){3,}$/.test(raw)) {
       pushPending();
       continue;
@@ -154,6 +198,7 @@ export function normalizeMarkdown(md: string): NormalizedMarkdown {
   let source = '';
   const indexed: MarkdownBlock[] = [];
   const emphases: MarkdownEmphasis[] = [];
+  const noterefs: MarkdownNoteref[] = [];
   for (const block of blocks) {
     if (source.length > 0) source += '\n\n';
     indexed.push({ startOffset: source.length, role: block.role, level: block.level });
@@ -167,11 +212,25 @@ export function normalizeMarkdown(md: string): NormalizedMarkdown {
           style: emphasis.style,
         });
       }
+      for (const noteref of line.noterefs) {
+        noterefs.push({
+          id: noteref.id,
+          label: noteref.label,
+          start: lineStart + noteref.start,
+          end: lineStart + noteref.end,
+        });
+      }
       source += line.text;
     });
   }
 
-  return { source: source.trim() + '\n', blocks: indexed, emphases };
+  return {
+    source: source.trim() + '\n',
+    blocks: indexed,
+    emphases,
+    noterefs,
+    footnotes: [...footnoteBodies].map(([id, body]) => ({ id, body })),
+  };
 }
 
 export function stripMarkdown(md: string): string {

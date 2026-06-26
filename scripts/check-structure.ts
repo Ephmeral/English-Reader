@@ -36,6 +36,18 @@ function assertEmphases(doc: Document, expected: Array<[EmphasisStyle, string]>,
   );
 }
 
+function assertFootnote(doc: Document, expectedLabel: string, expectedBody: string, label: string) {
+  assert.equal(doc.footnotes.length, 1, `${label}: expected one footnote`);
+  const footnote = doc.footnotes[0]!;
+  assert.equal(footnote.label, expectedLabel, `${label}: footnote label`);
+  assert.equal(footnote.body, expectedBody, `${label}: footnote body`);
+  assert.ok(!doc.source.includes(expectedBody), `${label}: footnote body is outside source`);
+  const token = doc.tokens[footnote.anchorTokenId];
+  assert.equal(token?.kind, 'noteref', `${label}: anchor token is noteref`);
+  assert.equal(token?.surface, expectedLabel, `${label}: noteref surface`);
+  assert.equal(token?.footnoteId, footnote.id, `${label}: noteref id`);
+}
+
 function assertBlocksCover(doc: Document, expected: BlockRole[], label: string) {
   assert.ok(doc.tokens.length > 0, `${label}: expected tokens`);
   assert.ok(doc.blocks.length > 0, `${label}: expected blocks`);
@@ -68,13 +80,15 @@ function assertBlocksCover(doc: Document, expected: BlockRole[], label: string) 
   const md = [
     '# Heading',
     '',
-    'Plain *italic* and **bold** paragraph',
+    'Plain *italic* and **bold** paragraph[^1]',
     'continues.',
     '',
     '> Quoted idea',
     '',
     '- First item',
     '2. Second item',
+    '',
+    '[^1]: Footnote body text.',
     '',
   ].join('\n');
   const parsed = await textParser.parse(sourceFile('sample.md', 'text/markdown', md));
@@ -87,6 +101,7 @@ function assertBlocksCover(doc: Document, expected: BlockRole[], label: string) 
     'list-item',
   ]);
   assertEmphases(parsed.document, [['italic', 'italic'], ['bold', 'bold']], 'md');
+  assertFootnote(parsed.document, '1', 'Footnote body text.', 'md');
 }
 
 {
@@ -95,7 +110,7 @@ function assertBlocksCover(doc: Document, expected: BlockRole[], label: string) 
   const opf =
     '<package xmlns:dc="http://purl.org/dc/elements/1.1/"><metadata><dc:title>Structure</dc:title></metadata><manifest><item id="chap" href="chap.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="chap"/></spine></package>';
   const xhtml =
-    '<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Heading</h1><p>Plain <em>italic</em> and <strong>bold</strong> paragraph.</p><blockquote><p>Quoted idea.</p></blockquote><ul><li>First item.</li><li>Second item.</li></ul></body></html>';
+    '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body><h1>Heading</h1><p>Plain <em>italic</em> and <strong>bold</strong> paragraph<a epub:type="noteref" href="#fn1">1</a>.</p><aside epub:type="footnote" id="fn1"><p>Footnote body text.</p></aside><blockquote><p>Quoted idea.</p></blockquote><ul><li>First item.</li><li>Second item.</li></ul></body></html>';
   const epub = zipSync({
     mimetype: strToU8('application/epub+zip'),
     'META-INF/container.xml': strToU8(container),
@@ -116,6 +131,7 @@ function assertBlocksCover(doc: Document, expected: BlockRole[], label: string) 
     'list-item',
   ]);
   assertEmphases(parsed.document, [['italic', 'italic'], ['bold', 'bold']], 'epub');
+  assertFootnote(parsed.document, '1', 'Footnote body text.', 'epub');
 }
 
 console.log('structure checks passed');

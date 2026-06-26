@@ -13,6 +13,7 @@ import type {
   DocumentMeta,
   Emphasis,
   EmphasisStyle,
+  Footnote,
   Token,
 } from '../model/token';
 import { ParseError } from '../errors';
@@ -146,12 +147,89 @@ function emphasisStyle(tag: string): EmphasisStyle | null {
   return null;
 }
 
+function epubTypes(el: XmlElement): string[] {
+  return (el.getAttribute('epub:type') ?? el.getAttribute('type') ?? '')
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function hasEpubType(el: XmlElement, type: string): boolean {
+  return epubTypes(el).includes(type);
+}
+
+function elementId(el: XmlElement): string | null {
+  return el.getAttribute('id') ?? el.getAttribute('xml:id');
+}
+
+function hrefFragment(href: string | null): string | null {
+  if (!href) return null;
+  const hash = href.indexOf('#');
+  if (hash < 0) return null;
+  const raw = href.slice(hash + 1).split('?')[0] ?? '';
+  if (!raw) return null;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function firstFragmentLink(root: XmlElement): XmlElement | undefined {
+  if (localName(root) === 'a' && hrefFragment(root.getAttribute('href'))) return root;
+  for (const child of toArr(root.childNodes)) {
+    if (!isElement(child)) continue;
+    const found = firstFragmentLink(child);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function isFootnoteBodyElement(el: XmlElement): boolean {
+  const tag = localName(el);
+  const types = epubTypes(el);
+  return (
+    types.includes('footnote') ||
+    types.includes('endnote') ||
+    el.getAttribute('role') === 'doc-footnote' ||
+    (tag === 'aside' && types.some((type) => type.includes('note')))
+  );
+}
+
+interface FootnoteBodies {
+  typed: Map<string, string>;
+  byId: Map<string, string>;
+}
+
+function collectFootnoteBodies(root: XmlNode): FootnoteBodies {
+  const typed = new Map<string, string>();
+  const byId = new Map<string, string>();
+
+  const visit = (node: XmlNode) => {
+    if (!isElement(node)) {
+      for (const child of toArr(node.childNodes)) visit(child);
+      return;
+    }
+
+    const id = elementId(node);
+    if (id) {
+      const body = textOf(node);
+      if (body) byId.set(id, body);
+      if (body && isFootnoteBodyElement(node)) typed.set(id, body);
+    }
+    for (const child of toArr(node.childNodes)) visit(child);
+  };
+
+  visit(root);
+  return { typed, byId };
+}
+
 /** 逐段构建扁平 source + token 流：文本走 tokenize，图片为零宽 token，保证不变式。 */
 class DocBuilder {
   source = '';
   tokens: Token[] = [];
   blocks: Block[] = [];
   emphases: Emphasis[] = [];
+  footnotes: Footnote[] = [];
   private id = 0;
 
   appendText(text: string): void {
@@ -166,6 +244,22 @@ class DocBuilder {
   appendImage(assetId: string): void {
     const at = this.source.length;
     this.tokens.push({ id: this.id++, kind: 'image', surface: '', start: at, end: at, assetId });
+  }
+
+  appendNoteref(footnoteId: string, label: string, body: string): void {
+    const surface = label || String(this.footnotes.length + 1);
+    const at = this.source.length;
+    const tokenId = this.id++;
+    this.source += surface;
+    this.tokens.push({
+      id: tokenId,
+      kind: 'noteref',
+      surface,
+      start: at,
+      end: at + surface.length,
+      footnoteId,
+    });
+    this.footnotes.push({ id: footnoteId, anchorTokenId: tokenId, label: surface, body });
   }
 
   appendBlock(startTokenId: number, role: BlockRole, level?: number): void {
@@ -319,7 +413,13 @@ export class EpubSourceParser implements SourceParser {
       return true;
     };
 
-    const walk = (node: XmlNode, xhtmlDir: string, activeBlock = false): void => {
+    const walk = (
+      node: XmlNode,
+      xhtmlDir: string,
+      xhtmlPath: string,
+      noteBodies: FootnoteBodies,
+      activeBlock = false,
+    ): void => {
       for (const child of toArr(node.childNodes)) {
         if (child.nodeType === NODE_TEXT) {
           const raw = child.nodeValue ?? '';
@@ -333,6 +433,26 @@ export class EpubSourceParser implements SourceParser {
         if (!isElement(child)) continue;
         const tag = localName(child);
         if (SKIP.has(tag)) continue;
+        if (isFootnoteBodyElement(child)) continue;
+        const noterefLink = hasEpubType(child, 'noteref')
+          ? child
+          : tag === 'sup'
+            ? firstFragmentLink(child)
+            : undefined;
+        if (noterefLink) {
+          const targetId = hrefFragment(noterefLink.getAttribute('href'));
+          const footnoteId = targetId
+            ? `${xhtmlPath}#${targetId}`
+            : `${xhtmlPath}#note-${builder.nextTokenId}`;
+          const body = targetId
+            ? noteBodies.typed.get(targetId) ?? noteBodies.byId.get(targetId) ?? ''
+            : '';
+          const label = textOf(child) || textOf(noterefLink);
+          const start = builder.nextTokenId;
+          builder.appendNoteref(footnoteId, label, body);
+          if (!activeBlock) builder.appendBlock(start, 'paragraph');
+          continue;
+        }
         if (tag === 'br') {
           builder.appendText('\n');
           continue;
@@ -352,7 +472,7 @@ export class EpubSourceParser implements SourceParser {
         const emphasis = emphasisStyle(tag);
         if (emphasis) {
           const start = builder.source.length;
-          walk(child, xhtmlDir, activeBlock);
+          walk(child, xhtmlDir, xhtmlPath, noteBodies, activeBlock);
           builder.appendEmphasis(start, builder.source.length, emphasis);
           continue;
         }
@@ -361,10 +481,10 @@ export class EpubSourceParser implements SourceParser {
         if (block) builder.ensureNewline();
         if (role && !activeBlock) {
           const start = builder.nextTokenId;
-          walk(child, xhtmlDir, true);
+          walk(child, xhtmlDir, xhtmlPath, noteBodies, true);
           builder.appendBlock(start, role.role, role.level);
         } else {
-          walk(child, xhtmlDir, activeBlock);
+          walk(child, xhtmlDir, xhtmlPath, noteBodies, activeBlock);
         }
         if (block) builder.appendText('\n');
       }
@@ -387,10 +507,11 @@ export class EpubSourceParser implements SourceParser {
       const doc = this.parseXml(xhtml, 'application/xhtml+xml');
       const body = first(doc.getElementsByTagName('body')) ?? doc.documentElement;
       if (!body) return;
+      const noteBodies = collectFootnoteBodies(body);
 
       builder.ensureNewline();
       const startTokenId = builder.nextTokenId;
-      walk(body, dirOf(path));
+      walk(body, dirOf(path), path, noteBodies);
       builder.ensureNewline();
 
       const chTitle = titleByFile.get(path) ?? firstHeading(body) ?? `Section ${idx + 1}`;
@@ -405,6 +526,7 @@ export class EpubSourceParser implements SourceParser {
     const blocks = builder.blocks.length > 0 ? builder.blocks : tokens.length > 0 ? [{ startTokenId: 0, role: 'paragraph' as const }] : [];
     if (tokens.length > 0 && blocks[0]?.startTokenId !== 0) blocks.unshift({ startTokenId: 0, role: 'paragraph' });
     const emphases = [...builder.emphases].sort((a, b) => a.start - b.start || a.end - b.end);
+    const footnotes = [...builder.footnotes];
     const wordCount = tokens.reduce((n, t) => (t.kind === 'word' ? n + 1 : n), 0);
     const id = stableId(source, file.name);
 
@@ -420,7 +542,7 @@ export class EpubSourceParser implements SourceParser {
       chapterCount: chapters.length,
     };
 
-    const document: Document = { id, title, source, tokens, chapters, blocks, emphases, meta };
+    const document: Document = { id, title, source, tokens, chapters, blocks, emphases, footnotes, meta };
     return { document, assets: [...assets.values()] };
   }
 
