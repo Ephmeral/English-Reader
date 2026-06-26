@@ -74,6 +74,16 @@ export interface Block {
   level?: number;
 }
 
+export type EmphasisStyle = 'italic' | 'bold';
+
+export interface Emphasis {
+  /** 在 Document.source 中的字符偏移，含。 */
+  start: number;
+  /** 字符偏移，不含。 */
+  end: number;
+  style: EmphasisStyle;
+}
+
 /** 平台无关的核心资产。所有功能只跟它打交道。 */
 export interface Document {
   /** 稳定 id（内容 hash 或 uuid，由实现决定，但需稳定可复现优先）。 */
@@ -86,5 +96,7 @@ export interface Document {
   chapters: ChapterMark[];
   /** v1.5：块级结构索引。只索引 token 流，不改变 source / offsets。 */
   blocks: Block[];
+  /** v1.5：内联强调索引。只索引 source 范围，不改变 token / offsets。 */
+  emphases: Emphasis[];
   meta: DocumentMeta;
 }

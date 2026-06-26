@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { DOMParser } from '@xmldom/xmldom';
 import { strToU8, zipSync } from 'fflate';
-import type { BlockRole, Document } from '../src/core/model/token';
+import type { BlockRole, Document, EmphasisStyle } from '../src/core/model/token';
 import { EpubSourceParser, type XmlParse } from '../src/core/parser/epub-source-parser';
 import { TextSourceParser, type SourceFile } from '../src/core/parser/source-parser';
 
@@ -21,6 +21,18 @@ function sourceFile(name: string, mime: string, text: string): SourceFile {
 function roles(doc: Document): string[] {
   return doc.blocks.map((block) =>
     block.role === 'heading' ? `${block.role}:${block.level ?? 1}` : block.role,
+  );
+}
+
+function emphasisTexts(doc: Document): string[] {
+  return doc.emphases.map((emphasis) => `${emphasis.style}:${doc.source.slice(emphasis.start, emphasis.end)}`);
+}
+
+function assertEmphases(doc: Document, expected: Array<[EmphasisStyle, string]>, label: string) {
+  assert.deepEqual(
+    emphasisTexts(doc),
+    expected.map(([style, text]) => `${style}:${text}`),
+    `${label}: emphasis ranges`,
   );
 }
 
@@ -56,7 +68,7 @@ function assertBlocksCover(doc: Document, expected: BlockRole[], label: string) 
   const md = [
     '# Heading',
     '',
-    'Plain paragraph',
+    'Plain *italic* and **bold** paragraph',
     'continues.',
     '',
     '> Quoted idea',
@@ -74,6 +86,7 @@ function assertBlocksCover(doc: Document, expected: BlockRole[], label: string) 
     'list-item',
     'list-item',
   ]);
+  assertEmphases(parsed.document, [['italic', 'italic'], ['bold', 'bold']], 'md');
 }
 
 {
@@ -82,7 +95,7 @@ function assertBlocksCover(doc: Document, expected: BlockRole[], label: string) 
   const opf =
     '<package xmlns:dc="http://purl.org/dc/elements/1.1/"><metadata><dc:title>Structure</dc:title></metadata><manifest><item id="chap" href="chap.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="chap"/></spine></package>';
   const xhtml =
-    '<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Heading</h1><p>Plain paragraph.</p><blockquote><p>Quoted idea.</p></blockquote><ul><li>First item.</li><li>Second item.</li></ul></body></html>';
+    '<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Heading</h1><p>Plain <em>italic</em> and <strong>bold</strong> paragraph.</p><blockquote><p>Quoted idea.</p></blockquote><ul><li>First item.</li><li>Second item.</li></ul></body></html>';
   const epub = zipSync({
     mimetype: strToU8('application/epub+zip'),
     'META-INF/container.xml': strToU8(container),
@@ -102,6 +115,7 @@ function assertBlocksCover(doc: Document, expected: BlockRole[], label: string) 
     'list-item',
     'list-item',
   ]);
+  assertEmphases(parsed.document, [['italic', 'italic'], ['bold', 'bold']], 'epub');
 }
 
 console.log('structure checks passed');

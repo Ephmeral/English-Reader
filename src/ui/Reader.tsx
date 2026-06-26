@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent, WheelEvent } from 'react';
 import type { Annotation } from '../core/model/annotation';
-import type { Block, Document, Token } from '../core/model/token';
+import type { Block, Document, Emphasis, Token } from '../core/model/token';
 import type { LevelScale } from '../core/model/level';
 import { bucketOf } from '../core/model/buckets';
 import type { XraySettings } from '../core/model/buckets';
@@ -93,6 +93,7 @@ function hasActiveTextSelection(): boolean {
 
 interface RenderTokensContext {
   annotations: Annotation[];
+  emphases: readonly Emphasis[];
   imageUrls: Record<string, string>;
   knownLemmas: ReadonlySet<string>;
   learner: ReturnType<LevelScale['fromSlider']>;
@@ -100,24 +101,43 @@ interface RenderTokensContext {
   xray: XraySettings;
 }
 
+function tokenEmphasisClasses(token: Token, emphases: readonly Emphasis[]): string[] {
+  if (token.kind === 'image') return [];
+  return emphases
+    .filter((emphasis) => token.start < emphasis.end && emphasis.start < token.end)
+    .map((emphasis) => (emphasis.style === 'bold' ? 'em-bold' : 'em-italic'));
+}
+
 function tokenPresentation(token: Token, ctx: RenderTokensContext) {
   const userHighlighted = ctx.annotations.some((annotation) => intersectsRange(token, annotation));
+  const emphasisClasses = tokenEmphasisClasses(token, ctx.emphases);
   if (token.kind === 'punct') {
     return {
-      className: userHighlighted ? 'punct user-highlight' : 'punct',
+      className: ['punct', userHighlighted ? 'user-highlight' : '', ...emphasisClasses]
+        .filter(Boolean)
+        .join(' '),
       style: undefined,
       title: undefined,
     };
   }
   if (token.kind !== 'word') {
-    return { className: undefined, style: undefined, title: undefined };
+    return {
+      className: emphasisClasses.length > 0 ? emphasisClasses.join(' ') : undefined,
+      style: undefined,
+      title: undefined,
+    };
   }
 
   const marked = !ctx.xray.enabled && shouldHighlight(token, ctx.learner, ctx.scale, ctx.knownLemmas);
   const bucket = ctx.xray.buckets[bucketOf(token.band)];
   const bandLabel = token.band == null ? 'OOV' : `${token.band}k`;
   return {
-    className: ['word', marked ? 'marked' : '', userHighlighted ? 'user-highlight' : '']
+    className: [
+      'word',
+      marked ? 'marked' : '',
+      userHighlighted ? 'user-highlight' : '',
+      ...emphasisClasses,
+    ]
       .filter(Boolean)
       .join(' '),
     style: ctx.xray.enabled && bucket?.visible ? { color: bucket.color } : undefined,
@@ -428,8 +448,8 @@ export function Reader({
   }, [chapterTokens]);
 
   const renderCtx = useMemo<RenderTokensContext>(
-    () => ({ annotations, imageUrls, knownLemmas, learner, scale, xray }),
-    [annotations, imageUrls, knownLemmas, learner, scale, xray],
+    () => ({ annotations, emphases: doc.emphases ?? [], imageUrls, knownLemmas, learner, scale, xray }),
+    [annotations, doc.emphases, imageUrls, knownLemmas, learner, scale, xray],
   );
   const documentBlocks = useMemo(() => doc.blocks ?? [], [doc.blocks]);
   const effectivePageStarts = useMemo(

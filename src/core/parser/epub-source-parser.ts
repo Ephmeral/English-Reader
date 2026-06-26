@@ -5,7 +5,16 @@
 // 不变式：对每个 token，surface === source.slice(start,end)；image token 零宽（取空切片）。
 
 import { unzipSync } from 'fflate';
-import type { Block, BlockRole, Document, DocumentMeta, ChapterMark, Token } from '../model/token';
+import type {
+  Block,
+  BlockRole,
+  ChapterMark,
+  Document,
+  DocumentMeta,
+  Emphasis,
+  EmphasisStyle,
+  Token,
+} from '../model/token';
 import { ParseError } from '../errors';
 import { tokenize } from './tokenize';
 import {
@@ -51,6 +60,8 @@ const BLOCK = new Set([
 ]);
 const HEADINGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
 const PARAGRAPH_BLOCKS = new Set(['p', 'pre', 'figcaption', 'figure']);
+const ITALIC_TAGS = new Set(['em', 'i']);
+const BOLD_TAGS = new Set(['strong', 'b']);
 // 不进入正文的标签。
 const SKIP = new Set(['head', 'script', 'style', 'title', 'link', 'meta']);
 
@@ -129,11 +140,18 @@ function blockRole(tag: string): { role: BlockRole; level?: number } | null {
   return null;
 }
 
+function emphasisStyle(tag: string): EmphasisStyle | null {
+  if (ITALIC_TAGS.has(tag)) return 'italic';
+  if (BOLD_TAGS.has(tag)) return 'bold';
+  return null;
+}
+
 /** 逐段构建扁平 source + token 流：文本走 tokenize，图片为零宽 token，保证不变式。 */
 class DocBuilder {
   source = '';
   tokens: Token[] = [];
   blocks: Block[] = [];
+  emphases: Emphasis[] = [];
   private id = 0;
 
   appendText(text: string): void {
@@ -154,6 +172,11 @@ class DocBuilder {
     if (startTokenId < 0 || startTokenId >= this.id) return;
     if (this.blocks.at(-1)?.startTokenId === startTokenId) return;
     this.blocks.push({ startTokenId, role, level });
+  }
+
+  appendEmphasis(start: number, end: number, style: EmphasisStyle): void {
+    if (start >= end) return;
+    this.emphases.push({ start, end, style });
   }
 
   ensureNewline(): void {
@@ -326,6 +349,13 @@ export class EpubSourceParser implements SourceParser {
           }
           continue;
         }
+        const emphasis = emphasisStyle(tag);
+        if (emphasis) {
+          const start = builder.source.length;
+          walk(child, xhtmlDir, activeBlock);
+          builder.appendEmphasis(start, builder.source.length, emphasis);
+          continue;
+        }
         const block = BLOCK.has(tag);
         const role = blockRole(tag);
         if (block) builder.ensureNewline();
@@ -374,6 +404,7 @@ export class EpubSourceParser implements SourceParser {
     const tokens = builder.tokens;
     const blocks = builder.blocks.length > 0 ? builder.blocks : tokens.length > 0 ? [{ startTokenId: 0, role: 'paragraph' as const }] : [];
     if (tokens.length > 0 && blocks[0]?.startTokenId !== 0) blocks.unshift({ startTokenId: 0, role: 'paragraph' });
+    const emphases = [...builder.emphases].sort((a, b) => a.start - b.start || a.end - b.end);
     const wordCount = tokens.reduce((n, t) => (t.kind === 'word' ? n + 1 : n), 0);
     const id = stableId(source, file.name);
 
@@ -389,7 +420,7 @@ export class EpubSourceParser implements SourceParser {
       chapterCount: chapters.length,
     };
 
-    const document: Document = { id, title, source, tokens, chapters, blocks, meta };
+    const document: Document = { id, title, source, tokens, chapters, blocks, emphases, meta };
     return { document, assets: [...assets.values()] };
   }
 

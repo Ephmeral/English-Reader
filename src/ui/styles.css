@@ -436,6 +436,12 @@ h6.blk-heading {
 }
 .word.marked.user-highlight {
   background: var(--user-highlight);
+.em-italic {
+  font-style: italic;
+}
+.em-bold {
+  font-weight: 700;
+}
   border-bottom-color: var(--marked-border);
 }
 .reader-image {
