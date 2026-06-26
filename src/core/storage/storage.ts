@@ -15,7 +15,13 @@ export interface VocabEntry {
   surface: string;
   band: number | null;
   comprehension: Comprehension;
-  contexts: Array<{ docId: string; sentence: string; tokenId: number; at: number }>;
+  contexts: Array<{
+    docId: string;
+    sentence: string;
+    tokenId: number;
+    at: number;
+    bookOccurrences?: number;
+  }>;
   firstSeenAt: number;
   lastMarkedAt: number;
 }

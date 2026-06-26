@@ -15,11 +15,17 @@ async function findEntry(deps: Deps, id: string): Promise<VocabEntry | null> {
 }
 
 /** 点词即持久化（comprehension 默认 unknown），并追加上下文句。 */
-export async function upsertVocabOnClick(deps: Deps, doc: Document, token: Token): Promise<void> {
+export async function upsertVocabOnClick(
+  deps: Deps,
+  doc: Document,
+  token: Token,
+  bookOccurrences?: number,
+): Promise<void> {
   const id = lemmaOf(token);
   const now = Date.now();
   const sentence = sentenceAround(doc, token);
   const existing = await findEntry(deps, id);
+  const context = { docId: doc.id, sentence, tokenId: token.id, at: now, bookOccurrences };
 
   if (existing) {
     const dup = existing.contexts.some((c) => c.docId === doc.id && c.tokenId === token.id);
@@ -28,8 +34,12 @@ export async function upsertVocabOnClick(deps: Deps, doc: Document, token: Token
       surface: existing.surface || token.surface,
       band: existing.band ?? token.band ?? null,
       contexts: dup
-        ? existing.contexts
-        : [...existing.contexts, { docId: doc.id, sentence, tokenId: token.id, at: now }],
+        ? existing.contexts.map((item) =>
+            item.docId === doc.id && item.tokenId === token.id
+              ? { ...item, bookOccurrences: item.bookOccurrences ?? bookOccurrences }
+              : item,
+          )
+        : [...existing.contexts, context],
     };
     await deps.storage.saveVocabEntry(entry);
     return;
@@ -41,7 +51,7 @@ export async function upsertVocabOnClick(deps: Deps, doc: Document, token: Token
     surface: token.surface,
     band: token.band ?? null,
     comprehension: 'unknown',
-    contexts: [{ docId: doc.id, sentence, tokenId: token.id, at: now }],
+    contexts: [context],
     firstSeenAt: now,
     lastMarkedAt: now,
   };
@@ -54,20 +64,36 @@ export async function setComprehension(
   doc: Document,
   token: Token,
   mark: Comprehension,
+  bookOccurrences?: number,
 ): Promise<void> {
   const id = lemmaOf(token);
   const now = Date.now();
   const existing = await findEntry(deps, id);
+  const context = {
+    docId: doc.id,
+    sentence: sentenceAround(doc, token),
+    tokenId: token.id,
+    at: now,
+    bookOccurrences,
+  };
   const base: VocabEntry = existing ?? {
     id,
     lemma: id,
     surface: token.surface,
     band: token.band ?? null,
     comprehension: 'unknown',
-    contexts: [{ docId: doc.id, sentence: sentenceAround(doc, token), tokenId: token.id, at: now }],
+    contexts: [context],
     firstSeenAt: now,
     lastMarkedAt: now,
   };
-  await deps.storage.saveVocabEntry({ ...base, comprehension: mark, lastMarkedAt: now });
+  const hasContext = base.contexts.some((item) => item.docId === doc.id && item.tokenId === token.id);
+  const contexts = hasContext
+    ? base.contexts.map((item) =>
+        item.docId === doc.id && item.tokenId === token.id
+          ? { ...item, bookOccurrences: item.bookOccurrences ?? bookOccurrences }
+          : item,
+      )
+    : [...base.contexts, context];
+  await deps.storage.saveVocabEntry({ ...base, contexts, comprehension: mark, lastMarkedAt: now });
   await deps.logger.log({ type: 'comprehension_mark', lemma: id, mark });
 }

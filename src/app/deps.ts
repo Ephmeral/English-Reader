@@ -24,6 +24,12 @@ import rawTable from '../data/lexicon-table.json';
 import wordnetUrl from '../data/dict/wordnet.json?url';
 import ecdictUrl from '../data/dict/ecdict.json?url';
 
+export { normalizeMeasurementLog } from '../core/assessment/vocab-size-test';
+export type {
+  MeasurementLogEntry,
+  MeasurementSource,
+} from '../core/assessment/vocab-size-test';
+
 export interface DictEnabled {
   wordnet: boolean;
   ecdict: boolean;
@@ -84,9 +90,51 @@ export type Theme = 'day' | 'sepia' | 'night';
 
 export const DEFAULT_THEME: Theme = 'day';
 
+export interface ReadingGoal {
+  dailyWords: number;
+  daysPerWeek: number;
+}
+
+export interface ReadingLogEntry {
+  date: string;
+  words: number;
+}
+
+export const DEFAULT_READING_GOAL: ReadingGoal = {
+  dailyWords: 150,
+  daysPerWeek: 5,
+};
+
+export function normalizeReadingGoal(value: unknown): ReadingGoal {
+  if (!value || typeof value !== 'object') return DEFAULT_READING_GOAL;
+  const raw = value as Partial<ReadingGoal>;
+  return {
+    dailyWords:
+      Number.isFinite(raw.dailyWords) && raw.dailyWords! > 0
+        ? Math.round(raw.dailyWords!)
+        : DEFAULT_READING_GOAL.dailyWords,
+    daysPerWeek:
+      Number.isFinite(raw.daysPerWeek) && raw.daysPerWeek! > 0
+        ? Math.max(1, Math.min(7, Math.round(raw.daysPerWeek!)))
+        : DEFAULT_READING_GOAL.daysPerWeek,
+  };
+}
+
+export function normalizeReadingLog(value: unknown): ReadingLogEntry[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is ReadingLogEntry => {
+      if (!item || typeof item !== 'object') return false;
+      const raw = item as Partial<ReadingLogEntry>;
+      return typeof raw.date === 'string' && Number.isFinite(raw.words);
+    })
+    .map((item) => ({ date: item.date, words: Math.max(0, Math.round(item.words)) }));
+}
+
 export interface Deps {
   parser: SourceParser;
   lexicon: TableLexicon;
+  lexiconTable: LexiconTable;
   scale: BandLevelScale;
   storage: Storage;
   logger: EventLogger;
@@ -99,9 +147,16 @@ export const SETTINGS_KEYS = {
   aiConfig: 'aiConfig',
   aiUseMock: 'aiUseMock',
   sliderLevel: 'sliderLevel',
+  measuredBand: 'measuredBand',
+  highlightBand: 'highlightBand',
   dictEnabled: 'dictEnabled',
   xray: 'xray',
+  semanticRecognition: 'semanticRecognition',
   readingPrefs: 'readingPrefs',
+  readingGoal: 'readingGoal',
+  readingLog: 'readingLog',
+  measurementLog: 'measurementLog',
+  difficultyHintsIgnored: 'difficultyHintsIgnored',
   theme: 'theme',
 } as const;
 
@@ -139,5 +194,14 @@ export function createDeps(): Deps {
     return new CachedAIService(new OpenAICompatTransport(cfg), cache);
   };
 
-  return { parser, lexicon, scale, storage, logger, dictionaries, makeAIService };
+  return {
+    parser,
+    lexicon,
+    lexiconTable: rawTable as unknown as LexiconTable,
+    scale,
+    storage,
+    logger,
+    dictionaries,
+    makeAIService,
+  };
 }

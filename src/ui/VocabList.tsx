@@ -29,32 +29,62 @@ export function VocabList({ deps }: { deps: Deps }) {
   if (entries.length === 0)
     return <div className="empty pad">还没有生词。在阅读中点击高亮词即可加入生词本。</div>;
 
+  const oneTimers = entries.filter((entry) => maxBookOccurrences(entry) <= 2);
+  const recurring = entries.filter((entry) => maxBookOccurrences(entry) > 2);
+  const groups = [
+    { title: 'One-timer · 建议主动记', entries: oneTimers },
+    { title: '高频 · 阅读会帮你重逢', entries: recurring },
+  ];
+
   return (
     <div className="vocab pad">
       <h2>生词本（{entries.length}）</h2>
-      <ul className="vocab-list">
-        {entries.map((e) => (
-          <li key={e.id} className="vocab-item">
-            <div className="vocab-head">
-              <span className="vocab-lemma">{e.lemma}</span>
-              <span className="vocab-band">{e.band == null ? 'OOV' : `${e.band}k`}</span>
-              <span className="vocab-count muted">{e.contexts.length} 处</span>
-            </div>
-            {e.contexts[0] && <p className="vocab-context">“{e.contexts[0].sentence}”</p>}
-            <div className="vocab-marks">
-              {(Object.keys(MARK_LABEL) as Comprehension[]).map((m) => (
-                <button
-                  key={m}
-                  className={e.comprehension === m ? 'mark active' : 'mark'}
-                  onClick={() => changeMark(e, m)}
-                >
-                  {MARK_LABEL[m]}
-                </button>
+      {groups.map((group) => (
+        <section key={group.title} className="vocab-group">
+          <h3>
+            {group.title}
+            <span className="muted">（{group.entries.length}）</span>
+          </h3>
+          {group.entries.length === 0 ? (
+            <p className="muted">暂无</p>
+          ) : (
+            <ul className="vocab-list">
+              {group.entries.map((e) => (
+                <li key={e.id} className="vocab-item">
+                  <div className="vocab-head">
+                    <span className="vocab-lemma">{e.lemma}</span>
+                    <span className="vocab-band">{e.band == null ? 'OOV' : `${e.band}k`}</span>
+                    <span className="vocab-count muted">{e.contexts.length} 处</span>
+                  </div>
+                  {e.contexts[0] && <p className="vocab-context">“{e.contexts[0].sentence}”</p>}
+                  <div className="vocab-marks">
+                    {(Object.keys(MARK_LABEL) as Comprehension[]).map((m) => (
+                      <button
+                        key={m}
+                        className={e.comprehension === m ? 'mark active' : 'mark'}
+                        onClick={() => changeMark(e, m)}
+                      >
+                        {MARK_LABEL[m]}
+                      </button>
+                    ))}
+                  </div>
+                </li>
               ))}
-            </div>
-          </li>
-        ))}
-      </ul>
+            </ul>
+          )}
+        </section>
+      ))}
     </div>
   );
+}
+
+function maxBookOccurrences(entry: VocabEntry): number {
+  const knownCounts = entry.contexts
+    .map((context) => context.bookOccurrences)
+    .filter((count): count is number => typeof count === 'number' && Number.isFinite(count));
+  if (knownCounts.length > 0) return Math.max(...knownCounts);
+
+  const docIds = new Set(entry.contexts.map((context) => context.docId));
+  if (docIds.size <= 1 && entry.contexts.length <= 1) return 1;
+  return 3;
 }
