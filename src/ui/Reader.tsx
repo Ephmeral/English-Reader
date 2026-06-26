@@ -1055,6 +1055,10 @@ export function Reader({
     safePageIndex < pageCount - 1 || (paginationComplete && safeChapterIndex < chapters.length - 1);
   const goalProgress = Math.min(1, readingRhythm.todayWords / readingRhythm.dailyWords);
   const estimatedMinutes = Math.max(1, Math.round(readingRhythm.dailyWords / 75));
+  // 约 150 词 ≈ 半页（≈300 词/页）；随每日目标缩放，不再写死「半页」。
+  const estimatedPages = readingRhythm.dailyWords / 300;
+  const pageLabel =
+    estimatedPages < 0.75 ? '半页' : estimatedPages < 1.25 ? '一页' : `${Math.round(estimatedPages)} 页`;
   const goalStyle = { '--goal-progress': `${Math.round(goalProgress * 100)}%` } as CSSProperties;
 
   return (
@@ -1065,7 +1069,7 @@ export function Reader({
         </div>
         <div>
           <strong>今日 {readingRhythm.todayWords} / {readingRhythm.dailyWords}</strong>
-          <span className="muted">≈ 半页 / ≈ {estimatedMinutes} 分钟</span>
+          <span className="muted">≈ {pageLabel} / ≈ {estimatedMinutes} 分钟</span>
           <span className="muted">
             本周 {readingRhythm.weekDone} / {readingRhythm.daysPerWeek} · 已坚持{' '}
             {readingRhythm.streakWeeks} 周
