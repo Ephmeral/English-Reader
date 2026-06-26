@@ -1,7 +1,7 @@
 // 点词释义浮层（规格 §3 阶段3 + 阶段4 理解度）。
 // loading/错误/重试态；无 key 引导设置；i+1 英文释义；理解程度标记。
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Document, Token } from '../core/model/token';
 import type { LevelScale } from '../core/model/level';
 import { sentenceAround } from '../core/model/context';
@@ -10,6 +10,7 @@ import type { Comprehension } from '../core/storage/storage';
 import type { DictEntry, Dictionary } from '../core/dictionary/dictionary';
 import type { Deps, DictEnabled } from '../app/deps';
 import { setComprehension } from '../app/vocab';
+import { WordContextCard } from './WordContextCard';
 
 type DictionaryStatus = 'loading' | 'ok' | 'error';
 type AIStatus = 'idle' | 'loading' | 'ok' | 'error';
@@ -74,7 +75,7 @@ export function WordPopup({
   scale: LevelScale;
   dictEnabled: DictEnabled;
   occurrence?: { index: number; total: number };
-  existingComprehension?: Exclude<Comprehension, 'known'>;
+  existingComprehension?: Comprehension;
   onClose: () => void;
   onVocabChange: () => void;
   onGoSettings: () => void;
@@ -94,17 +95,25 @@ export function WordPopup({
   const lemma = token.lemma ?? token.surface.toLowerCase();
   const level = scale.fromSlider(sliderLevel);
   const bandLabel = token.band == null ? 'OOV' : `${token.band}k`;
-  const sentence = sentenceAround(doc, token);
+  const sentence = useMemo(() => sentenceAround(doc, token), [doc, token]);
   const speechAvailable = canSpeak();
   const enabledDictionaryCount = deps.dictionaries.filter((dictionary) =>
     isDictionaryEnabled(dictEnabled, dictionary.id),
   ).length;
-  const reinforcement =
-    occurrence
-      ? `本书第 ${occurrence.index} / ${occurrence.total} 次出现${
-          existingComprehension ? ` · 你上次标为「${existingComprehension === 'fuzzy' ? '模糊' : '不认识'}」` : ''
-        }`
-      : '';
+  const reinforcement = useMemo(() => {
+    if (!occurrence || mark === 'known') return '';
+    const prior =
+      existingComprehension && existingComprehension !== 'known'
+        ? ` · 你上次标为「${existingComprehension === 'fuzzy' ? '模糊' : '不认识'}」`
+        : '';
+    const frequency =
+      occurrence.total <= 2
+        ? ` · 本书仅出现 ${occurrence.total} 次，阅读不会帮你重逢——想记就现在记下来`
+        : occurrence.index < occurrence.total
+          ? ` · 本书还会遇到 ${occurrence.total - occurrence.index} 次，可交给阅读自然重复`
+          : ' · 本书最后一次出现';
+    return `本书第 ${occurrence.index} / ${occurrence.total} 次出现${prior}${frequency}`;
+  }, [existingComprehension, mark, occurrence]);
 
   useEffect(() => {
     setMark(existingComprehension ?? 'unknown');
@@ -251,10 +260,10 @@ export function WordPopup({
   const choose = useCallback(
     async (m: Comprehension) => {
       setMark(m);
-      await setComprehension(deps, doc, token, m);
+      await setComprehension(deps, doc, token, m, occurrence?.total);
       onVocabChange();
     },
-    [deps, doc, onVocabChange, token],
+    [deps, doc, occurrence, onVocabChange, token],
   );
 
   return (
@@ -286,42 +295,49 @@ export function WordPopup({
         </div>
 
         <div className="popup-body">
+          <WordContextCard
+            sentence={sentence}
+            surface={token.surface}
+            onSpeak={speechAvailable ? () => speak(sentence) : undefined}
+          />
           {reinforcement && <div className="reinforcement muted">{reinforcement}</div>}
-          {dictionaryStatus === 'loading' && <div className="muted">准备词典中…</div>}
-          {dictionaryStatus === 'error' && (
-            <div className="error">词典加载失败：{dictionaryError}</div>
-          )}
-          {dictionaryStatus === 'ok' && dictionaryEntries.length === 0 && (
-            <div className="muted">
-              {enabledDictionaryCount === 0 ? '未启用离线词典。' : '未找到离线词典条目。'}
-            </div>
-          )}
-          {dictionaryEntries.map(({ dictionary, entry }) => (
-            <section key={dictionary.id} className="dict-entry">
-              <div className="dict-head">
-                <span>{dictionary.label}</span>
-                {entry.phonetic && <span className="dict-phonetic">/{entry.phonetic}/</span>}
+          <details className="dict-details">
+            <summary>展开看词典释义</summary>
+            {dictionaryStatus === 'loading' && <div className="muted">准备词典中…</div>}
+            {dictionaryStatus === 'error' && (
+              <div className="error">词典加载失败：{dictionaryError}</div>
+            )}
+            {dictionaryStatus === 'ok' && dictionaryEntries.length === 0 && (
+              <div className="muted">
+                {enabledDictionaryCount === 0 ? '未启用离线词典。' : '未找到离线词典条目。'}
               </div>
-              {entry.senses.length > 0 && (
-                <ol className="dict-senses">
-                  {entry.senses.slice(0, 5).map((sense, index) => (
-                    <li key={`${sense.pos ?? 'sense'}-${index}`}>
-                      {sense.pos && <span className="dict-pos">{sense.pos}</span>}
-                      {sense.gloss}
-                    </li>
-                  ))}
-                </ol>
-              )}
-              {entry.translations && entry.translations.length > 0 && (
-                <ul className="dict-translations">
-                  {entry.translations.slice(0, 6).map((translation) => (
-                    <li key={translation}>{translation}</li>
-                  ))}
-                </ul>
-              )}
-            </section>
-          ))}
-
+            )}
+            {dictionaryEntries.map(({ dictionary, entry }) => (
+              <section key={dictionary.id} className="dict-entry">
+                <div className="dict-head">
+                  <span>{dictionary.label}</span>
+                  {entry.phonetic && <span className="dict-phonetic">/{entry.phonetic}/</span>}
+                </div>
+                {entry.senses.length > 0 && (
+                  <ol className="dict-senses">
+                    {entry.senses.slice(0, 5).map((sense, index) => (
+                      <li key={`${sense.pos ?? 'sense'}-${index}`}>
+                        {sense.pos && <span className="dict-pos">{sense.pos}</span>}
+                        {sense.gloss}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+                {entry.translations && entry.translations.length > 0 && (
+                  <ul className="dict-translations">
+                    {entry.translations.slice(0, 6).map((translation) => (
+                      <li key={translation}>{translation}</li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            ))}
+          </details>
           <div className="ai-panel">
             <button type="button" onClick={requestExplanation} disabled={aiStatus === 'loading'}>
               用更简单的英文解释
@@ -343,13 +359,6 @@ export function WordPopup({
               </div>
             )}
           </div>
-          {speechAvailable && (
-            <div className="popup-speech-actions">
-              <button type="button" className="speech-button" onClick={() => speak(sentence)}>
-                朗读例句
-              </button>
-            </div>
-          )}
         </div>
 
         <div className="popup-marks">
