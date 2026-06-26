@@ -18,6 +18,13 @@ export interface PageMeasure {
   done: boolean;
 }
 
+export interface PaginationCursor {
+  starts: number[];
+  nextIndex: number;
+  seedTokenCount: number;
+  done: boolean;
+}
+
 function assertUsableMetrics(metrics: PaginationMetrics) {
   if (!Number.isFinite(metrics.pageHeightPx) || metrics.pageHeightPx <= 0) {
     throw new Error('pageHeightPx must be a positive finite number');
@@ -39,6 +46,11 @@ function fitsPage(
 function normalizedSeed(seedTokenCount: number | undefined, remaining: number): number {
   if (!Number.isFinite(seedTokenCount) || !seedTokenCount) return 1;
   return Math.max(1, Math.min(remaining, Math.trunc(seedTokenCount)));
+}
+
+function normalizedStartIndex(tokens: readonly Token[], startIndex: number | undefined): number {
+  if (!Number.isFinite(startIndex)) return 0;
+  return Math.max(0, Math.min(tokens.length, Math.trunc(startIndex ?? 0)));
 }
 
 export function measurePage(
@@ -92,6 +104,57 @@ export function measurePage(
   };
 }
 
+export function createPaginationCursor(tokens: readonly Token[], startIndex = 0): PaginationCursor {
+  const nextIndex = normalizedStartIndex(tokens, startIndex);
+  return {
+    starts: [],
+    nextIndex,
+    seedTokenCount: 1,
+    done: nextIndex >= tokens.length,
+  };
+}
+
+export function measurePageChunk(
+  measureBox: PaginationMeasureBox,
+  tokens: readonly Token[],
+  metrics: PaginationMetrics,
+  cursor: PaginationCursor,
+  pageLimit: number,
+): PaginationCursor {
+  assertUsableMetrics(metrics);
+  if (tokens.length === 0 || cursor.done) {
+    return { ...cursor, done: true };
+  }
+
+  const limit = Number.isFinite(pageLimit) ? Math.max(0, Math.trunc(pageLimit)) : 0;
+  const starts = [...cursor.starts];
+  let nextIndex = normalizedStartIndex(tokens, cursor.nextIndex);
+  let seedTokenCount = cursor.seedTokenCount;
+  let measuredPages = 0;
+
+  while (nextIndex < tokens.length && measuredPages < limit) {
+    const page = measurePage(measureBox, tokens, nextIndex, metrics, seedTokenCount);
+    if (!page) break;
+    starts.push(page.start);
+    nextIndex = page.endIndex;
+    seedTokenCount = page.tokenCount;
+    measuredPages += 1;
+    if (page.done) break;
+  }
+
+  return {
+    starts,
+    nextIndex,
+    seedTokenCount,
+    done: nextIndex >= tokens.length,
+  };
+}
+
+export function pageStartsWithBoundary(cursor: PaginationCursor, tokens: readonly Token[]): number[] {
+  const nextStart = tokens[cursor.nextIndex]?.start;
+  return cursor.done || nextStart == null ? [...cursor.starts] : [...cursor.starts, nextStart];
+}
+
 export function measurePageStarts(
   measureBox: PaginationMeasureBox,
   tokens: readonly Token[],
@@ -100,20 +163,13 @@ export function measurePageStarts(
   assertUsableMetrics(metrics);
   if (tokens.length === 0) return [];
 
-  const pageStarts: number[] = [];
-  let startIndex = 0;
-  let seedTokenCount = 1;
-
-  while (startIndex < tokens.length) {
-    const page = measurePage(measureBox, tokens, startIndex, metrics, seedTokenCount);
-    if (!page) break;
-    pageStarts.push(page.start);
-    startIndex = page.endIndex;
-    seedTokenCount = page.tokenCount;
+  let cursor = createPaginationCursor(tokens);
+  while (!cursor.done) {
+    cursor = measurePageChunk(measureBox, tokens, metrics, cursor, 1);
   }
 
   measureBox.replaceChildren();
-  return pageStarts;
+  return cursor.starts;
 }
 
 export function pageRangeForOffset(pageStarts: readonly number[], offset: number): number {

@@ -16,12 +16,14 @@ import type { SourceSelection } from './selection';
 import { selectionToSourceRange } from './selection';
 import { ReadingPanel } from './ReadingPanel';
 import {
+  createPaginationCursor,
   firstTokenAtOrAfter,
-  measurePage,
+  measurePageChunk,
   measurePageStarts,
   pageRangeForOffset,
+  pageStartsWithBoundary,
   tokensForPage,
-  type PaginationMeasureBox,
+  type PaginationCursor,
   type PaginationMetrics,
 } from './reader/paginate';
 
@@ -47,13 +49,6 @@ type WindowWithIdleCallback = Window & {
   cancelIdleCallback?: (handle: number) => void;
 };
 
-interface PageWindowMeasure {
-  starts: number[];
-  nextIndex: number;
-  seedTokenCount: number;
-  done: boolean;
-}
-
 function schedulePaginationIdle(callback: (deadline: IdleDeadlineLike) => void): () => void {
   const win = window as WindowWithIdleCallback;
   if (win.requestIdleCallback && win.cancelIdleCallback) {
@@ -69,39 +64,6 @@ function schedulePaginationIdle(callback: (deadline: IdleDeadlineLike) => void):
     });
   }, 0);
   return () => window.clearTimeout(handle);
-}
-
-function measurePageWindow(
-  measureBox: PaginationMeasureBox,
-  tokens: readonly Token[],
-  startIndex: number,
-  metrics: PaginationMetrics,
-  pageLimit: number,
-): PageWindowMeasure {
-  const starts: number[] = [];
-  let nextIndex = startIndex;
-  let seedTokenCount = 1;
-
-  while (nextIndex < tokens.length && starts.length < pageLimit) {
-    const page = measurePage(measureBox, tokens, nextIndex, metrics, seedTokenCount);
-    if (!page) break;
-    starts.push(page.start);
-    nextIndex = page.endIndex;
-    seedTokenCount = page.tokenCount;
-    if (page.done) break;
-  }
-
-  return {
-    starts,
-    nextIndex,
-    seedTokenCount,
-    done: nextIndex >= tokens.length,
-  };
-}
-
-function pageStartsWithBoundary(measure: PageWindowMeasure, tokens: readonly Token[]): number[] {
-  const nextStart = tokens[measure.nextIndex]?.start;
-  return measure.done || nextStart == null ? measure.starts : [...measure.starts, nextStart];
 }
 
 export interface WordClick {
@@ -516,7 +478,8 @@ export function Reader({
     }
 
     function currentMetrics(): PaginationMetrics | null {
-      const pageHeightPx = readerEl.clientHeight;
+      const pageHeightPx =
+        readerEl.querySelector<HTMLElement>('.page-track')?.clientHeight ?? readerEl.clientHeight;
       if (pageHeightPx <= 0) {
         return null;
       }
@@ -544,37 +507,27 @@ export function Reader({
       }
     }
 
-    function measureChunked(metrics: PaginationMetrics, initial: PageWindowMeasure | null, publishProgress: boolean) {
-      const starts = initial ? [...initial.starts] : [];
-      let nextIndex = initial?.nextIndex ?? 0;
-      let seedTokenCount = initial?.seedTokenCount ?? 1;
+    function measureChunked(metrics: PaginationMetrics, initial: PaginationCursor | null, publishProgress: boolean) {
+      let cursor = initial ?? createPaginationCursor(chapterTokens);
 
       const runChunk = (deadline: IdleDeadlineLike) => {
         cancelIdleMeasure = null;
         if (!alive) return;
-        let measuredPages = 0;
-        while (nextIndex < chapterTokens.length && measuredPages < IDLE_PAGINATION_MAX_PAGES) {
-          const page = measurePage(measureBoxEl, chapterTokens, nextIndex, metrics, seedTokenCount);
-          if (!page) break;
-          starts.push(page.start);
-          nextIndex = page.endIndex;
-          seedTokenCount = page.tokenCount;
-          measuredPages += 1;
-          if (deadline.timeRemaining() <= 1 && measuredPages > 0) break;
+        let pagesLeft = IDLE_PAGINATION_MAX_PAGES;
+        while (!cursor.done && pagesLeft > 0) {
+          cursor = measurePageChunk(measureBoxEl, chapterTokens, metrics, cursor, 1);
+          pagesLeft -= 1;
+          if (deadline.timeRemaining() <= 1) break;
         }
 
-        if (nextIndex >= chapterTokens.length) {
+        if (cursor.done) {
           measureBoxEl.replaceChildren();
-          applyMeasuredStarts(starts, true, false);
+          applyMeasuredStarts(cursor.starts, true, false);
           return;
         }
 
-        if (publishProgress && starts.length > 0) {
-          applyMeasuredStarts(
-            pageStartsWithBoundary({ starts, nextIndex, seedTokenCount, done: false }, chapterTokens),
-            false,
-            false,
-          );
+        if (publishProgress && cursor.starts.length > 0) {
+          applyMeasuredStarts(pageStartsWithBoundary(cursor, chapterTokens), false, false);
         }
         cancelIdleMeasure = schedulePaginationIdle(runChunk);
       };
@@ -600,11 +553,11 @@ export function Reader({
       }
 
       const startIndex = firstTokenAtOrAfter(chapterTokens, retained);
-      const initialWindow = measurePageWindow(
+      const initialWindow = measurePageChunk(
         measureBoxEl,
         chapterTokens,
-        startIndex,
         metrics,
+        createPaginationCursor(chapterTokens, startIndex),
         INITIAL_CHUNKED_PAGES,
       );
       const initialStarts = pageStartsWithBoundary(initialWindow, chapterTokens);

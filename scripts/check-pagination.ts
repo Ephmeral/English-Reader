@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import type { Token, TokenKind } from '../src/core/model/token';
 import {
-  measurePage,
+  createPaginationCursor,
+  measurePageChunk,
   measurePageStarts,
   pageRangeForOffset,
+  pageStartsWithBoundary,
   tokensForPage,
   type PaginationMeasureBox,
   type PaginationMetrics,
@@ -118,21 +120,36 @@ const paragraph = makeTokens([
   const syncStarts = measurePageStarts(sync.box, manyTokens, sync.metrics);
 
   const chunked = setupMetrics(25, () => 1);
-  const chunkedStarts: number[] = [];
-  let startIndex = 0;
-  let seedTokenCount = 1;
-  while (startIndex < manyTokens.length) {
-    const page = measurePage(chunked.box, manyTokens, startIndex, chunked.metrics, seedTokenCount);
-    assert.ok(page);
-    chunkedStarts.push(page.start);
-    startIndex = page.endIndex;
-    seedTokenCount = page.tokenCount;
+  let cursor = createPaginationCursor(manyTokens);
+  const partial = measurePageChunk(chunked.box, manyTokens, chunked.metrics, cursor, 3);
+  assert.equal(partial.done, false);
+  assert.deepEqual(pageStartsWithBoundary(partial, manyTokens), syncStarts.slice(0, 4));
+
+  cursor = partial;
+  while (!cursor.done) {
+    cursor = measurePageChunk(chunked.box, manyTokens, chunked.metrics, cursor, 2);
   }
   chunked.box.replaceChildren();
 
-  assert.deepEqual(chunkedStarts, syncStarts);
-  assertReconstructs(manyTokens, chunkedStarts);
+  assert.deepEqual(cursor.starts, syncStarts);
+  assertReconstructs(manyTokens, cursor.starts);
   assert.ok(chunked.renderPasses() <= sync.renderPasses());
+}
+
+{
+  const manyTokens = makeTokens(Array.from({ length: 250 }, (_, index) => String(index % 10)));
+  const sync = setupMetrics(25, () => 1);
+  const syncStarts = measurePageStarts(sync.box, manyTokens, sync.metrics);
+  const fromMiddle = setupMetrics(25, () => 1);
+  const cursor = measurePageChunk(
+    fromMiddle.box,
+    manyTokens,
+    fromMiddle.metrics,
+    createPaginationCursor(manyTokens, 100),
+    2,
+  );
+
+  assert.deepEqual(pageStartsWithBoundary(cursor, manyTokens), syncStarts.slice(4, 7));
 }
 
 {
