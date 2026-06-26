@@ -64,6 +64,16 @@ export interface ChapterMark {
   startTokenId: number;
 }
 
+export type BlockRole = 'paragraph' | 'blockquote' | 'heading' | 'list-item';
+
+export interface Block {
+  /** Block 起始 token id；结束位置由下一个 Block 或 token 流末尾决定。 */
+  startTokenId: number;
+  role: BlockRole;
+  /** 仅 role==='heading' 有意义，取 1..6。 */
+  level?: number;
+}
+
 /** 平台无关的核心资产。所有功能只跟它打交道。 */
 export interface Document {
   /** 稳定 id（内容 hash 或 uuid，由实现决定，但需稳定可复现优先）。 */
@@ -74,5 +84,7 @@ export interface Document {
   tokens: Token[];
   /** v1.3：章节索引（txt/md = 单章；epub = 每 spine item 一章）。 */
   chapters: ChapterMark[];
+  /** v1.5：块级结构索引。只索引 token 流，不改变 source / offsets。 */
+  blocks: Block[];
   meta: DocumentMeta;
 }

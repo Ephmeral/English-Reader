@@ -19,6 +19,7 @@
     "test:offsets": "node scripts/check-offsets.mjs",
     "test:epub": "tsx scripts/check-epub.ts",
     "test:pagination": "tsx scripts/check-pagination.ts",
+    "test:structure": "tsx scripts/check-structure.ts",
     "report:quality": "node scripts/quality-report.mjs"
   },
   "dependencies": {

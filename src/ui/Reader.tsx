@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent, WheelEvent } from 'react';
 import type { Annotation } from '../core/model/annotation';
-import type { Document, Token } from '../core/model/token';
+import type { Block, Document, Token } from '../core/model/token';
 import type { LevelScale } from '../core/model/level';
 import { bucketOf } from '../core/model/buckets';
 import type { XraySettings } from '../core/model/buckets';
@@ -125,61 +125,140 @@ function tokenPresentation(token: Token, ctx: RenderTokensContext) {
   };
 }
 
-function renderTokens(tokens: readonly Token[], ctx: RenderTokensContext) {
-  return tokens.map((token) => {
-    if (token.kind === 'image') {
-      const src = token.assetId ? ctx.imageUrls[token.assetId] : undefined;
-      return (
-        <figure key={token.id} className="reader-image" data-start={token.start}>
-          {src ? <img src={src} alt="" loading="lazy" /> : <div className="image-placeholder" />}
-        </figure>
-      );
-    }
+interface TokenBlockRun {
+  block: Block;
+  tokens: Token[];
+}
 
-    const presentation = tokenPresentation(token, ctx);
-    if (token.kind !== 'word') {
-      return (
-        <span key={token.id} className={presentation.className} data-start={token.start}>
-          {token.surface}
-        </span>
-      );
-    }
+function fallbackBlock(tokens: readonly Token[]): Block {
+  return { startTokenId: tokens[0]?.id ?? 0, role: 'paragraph' };
+}
 
+function blockForToken(blocks: readonly Block[], tokenId: number, startIndex: number): number {
+  let index = Math.max(0, startIndex);
+  while (blocks[index + 1] && blocks[index + 1]!.startTokenId <= tokenId) index += 1;
+  return index;
+}
+
+function tokenBlockRuns(tokens: readonly Token[], blocks: readonly Block[]): TokenBlockRun[] {
+  if (tokens.length === 0) return [];
+  if (blocks.length === 0) return [{ block: fallbackBlock(tokens), tokens: [...tokens] }];
+
+  const runs: TokenBlockRun[] = [];
+  let blockIndex = blockForToken(blocks, tokens[0]?.id ?? 0, 0);
+  for (const token of tokens) {
+    blockIndex = blockForToken(blocks, token.id, blockIndex);
+    const block = blocks[blockIndex] ?? fallbackBlock(tokens);
+    const last = runs.at(-1);
+    if (last?.block.startTokenId === block.startTokenId) {
+      last.tokens.push(token);
+    } else {
+      runs.push({ block, tokens: [token] });
+    }
+  }
+  return runs;
+}
+
+function blockTag(block: Block): keyof JSX.IntrinsicElements {
+  if (block.role === 'blockquote') return 'blockquote';
+  if (block.role === 'list-item') return 'li';
+  if (block.role === 'heading') {
+    const level = Math.max(2, Math.min(6, Math.round(block.level ?? 2)));
+    return `h${level}` as keyof JSX.IntrinsicElements;
+  }
+  return 'p';
+}
+
+function blockClassName(block: Block): string {
+  return [
+    'reader-block',
+    block.role === 'blockquote' ? 'blk-quote' : '',
+    block.role === 'heading' ? 'blk-heading' : '',
+    block.role === 'list-item' ? 'blk-list-item' : '',
+    block.role === 'paragraph' ? 'blk-paragraph' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+function renderToken(token: Token, ctx: RenderTokensContext) {
+  if (token.kind === 'image') {
+    const src = token.assetId ? ctx.imageUrls[token.assetId] : undefined;
     return (
-      <span
-        key={token.id}
-        className={presentation.className}
-        data-start={token.start}
-        role="button"
-        tabIndex={0}
-        title={presentation.title}
-        style={presentation.style}
-      >
+      <figure key={token.id} className="reader-image" data-start={token.start}>
+        {src ? <img src={src} alt="" loading="lazy" /> : <div className="image-placeholder" />}
+      </figure>
+    );
+  }
+
+  const presentation = tokenPresentation(token, ctx);
+  if (token.kind !== 'word') {
+    return (
+      <span key={token.id} className={presentation.className} data-start={token.start}>
         {token.surface}
       </span>
+    );
+  }
+
+  return (
+    <span
+      key={token.id}
+      className={presentation.className}
+      data-start={token.start}
+      role="button"
+      tabIndex={0}
+      title={presentation.title}
+      style={presentation.style}
+    >
+      {token.surface}
+    </span>
+  );
+}
+
+function renderTokens(tokens: readonly Token[], ctx: RenderTokensContext, blocks: readonly Block[]) {
+  return tokenBlockRuns(tokens, blocks).map((run) => {
+    const Tag = blockTag(run.block);
+    return (
+      <Tag
+        key={`${run.block.startTokenId}:${run.tokens[0]?.id ?? 0}`}
+        className={blockClassName(run.block)}
+      >
+        {run.tokens.map((token) => renderToken(token, ctx))}
+      </Tag>
     );
   });
 }
 
-function createMeasureNodes(tokens: readonly Token[], ctx: RenderTokensContext): (Node | string)[] {
-  return tokens.map((token) => {
-    if (token.kind === 'image') {
-      const figure = document.createElement('figure');
-      figure.className = 'reader-image';
-      figure.dataset.start = String(token.start);
-      const placeholder = document.createElement('div');
-      placeholder.className = 'image-placeholder image-measure-placeholder';
-      figure.append(placeholder);
-      return figure;
-    }
+function createMeasureTokenNode(token: Token, ctx: RenderTokensContext): Node {
+  if (token.kind === 'image') {
+    const figure = document.createElement('figure');
+    figure.className = 'reader-image';
+    figure.dataset.start = String(token.start);
+    const placeholder = document.createElement('div');
+    placeholder.className = 'image-placeholder image-measure-placeholder';
+    figure.append(placeholder);
+    return figure;
+  }
 
-    const span = document.createElement('span');
-    const presentation = tokenPresentation(token, ctx);
-    if (presentation.className) span.className = presentation.className;
-    if (presentation.style?.color) span.style.color = presentation.style.color;
-    span.dataset.start = String(token.start);
-    span.textContent = token.surface;
-    return span;
+  const span = document.createElement('span');
+  const presentation = tokenPresentation(token, ctx);
+  if (presentation.className) span.className = presentation.className;
+  if (presentation.style?.color) span.style.color = presentation.style.color;
+  span.dataset.start = String(token.start);
+  span.textContent = token.surface;
+  return span;
+}
+
+function createMeasureNodes(
+  tokens: readonly Token[],
+  ctx: RenderTokensContext,
+  blocks: readonly Block[],
+): (Node | string)[] {
+  return tokenBlockRuns(tokens, blocks).map((run) => {
+    const element = document.createElement(blockTag(run.block));
+    element.className = blockClassName(run.block);
+    element.append(...run.tokens.map((token) => createMeasureTokenNode(token, ctx)));
+    return element;
   });
 }
 
@@ -349,6 +428,7 @@ export function Reader({
     () => ({ annotations, imageUrls, knownLemmas, learner, scale, xray }),
     [annotations, imageUrls, knownLemmas, learner, scale, xray],
   );
+  const documentBlocks = useMemo(() => doc.blocks ?? [], [doc.blocks]);
   const effectivePageStarts = useMemo(
     () => {
       if (pageStarts.length) return pageStarts;
@@ -485,7 +565,7 @@ export function Reader({
       }
       return {
         pageHeightPx,
-        renderTokens: (tokens) => createMeasureNodes(tokens, renderCtx),
+        renderTokens: (tokens) => createMeasureNodes(tokens, renderCtx, documentBlocks),
       };
     }
 
@@ -589,7 +669,7 @@ export function Reader({
       clearScheduledMeasure();
       clearIdleMeasure();
     };
-  }, [chapterTokens, initialOffset, readingPrefs, renderCtx]);
+  }, [chapterTokens, documentBlocks, initialOffset, readingPrefs, renderCtx]);
 
   useLayoutEffect(() => {
     if (lastInitialOffsetRef.current !== initialOffset) {
@@ -785,8 +865,8 @@ export function Reader({
   }, [turnPage]);
 
   const renderedPages = useMemo(
-    () => pageTokens.map((tokens) => renderTokens(tokens, renderCtx)),
-    [pageTokens, renderCtx],
+    () => pageTokens.map((tokens) => renderTokens(tokens, renderCtx, documentBlocks)),
+    [documentBlocks, pageTokens, renderCtx],
   );
 
   useEffect(() => {

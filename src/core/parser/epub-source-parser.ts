@@ -5,7 +5,7 @@
 // 不变式：对每个 token，surface === source.slice(start,end)；image token 零宽（取空切片）。
 
 import { unzipSync } from 'fflate';
-import type { Document, DocumentMeta, ChapterMark, Token } from '../model/token';
+import type { Block, BlockRole, Document, DocumentMeta, ChapterMark, Token } from '../model/token';
 import { ParseError } from '../errors';
 import { tokenize } from './tokenize';
 import {
@@ -50,6 +50,7 @@ const BLOCK = new Set([
   'table', 'tr', 'td', 'th', 'pre', 'aside', 'main', 'hr',
 ]);
 const HEADINGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
+const PARAGRAPH_BLOCKS = new Set(['p', 'pre', 'figcaption', 'figure']);
 // 不进入正文的标签。
 const SKIP = new Set(['head', 'script', 'style', 'title', 'link', 'meta']);
 
@@ -120,10 +121,19 @@ function inferMime(path: string): string {
   return MIME_BY_EXT[ext] ?? 'application/octet-stream';
 }
 
+function blockRole(tag: string): { role: BlockRole; level?: number } | null {
+  if (tag === 'blockquote') return { role: 'blockquote' };
+  if (tag === 'li') return { role: 'list-item' };
+  if (HEADINGS.has(tag)) return { role: 'heading', level: Number(tag.slice(1)) };
+  if (PARAGRAPH_BLOCKS.has(tag)) return { role: 'paragraph' };
+  return null;
+}
+
 /** 逐段构建扁平 source + token 流：文本走 tokenize，图片为零宽 token，保证不变式。 */
 class DocBuilder {
   source = '';
   tokens: Token[] = [];
+  blocks: Block[] = [];
   private id = 0;
 
   appendText(text: string): void {
@@ -138,6 +148,12 @@ class DocBuilder {
   appendImage(assetId: string): void {
     const at = this.source.length;
     this.tokens.push({ id: this.id++, kind: 'image', surface: '', start: at, end: at, assetId });
+  }
+
+  appendBlock(startTokenId: number, role: BlockRole, level?: number): void {
+    if (startTokenId < 0 || startTokenId >= this.id) return;
+    if (this.blocks.at(-1)?.startTokenId === startTokenId) return;
+    this.blocks.push({ startTokenId, role, level });
   }
 
   ensureNewline(): void {
@@ -280,11 +296,15 @@ export class EpubSourceParser implements SourceParser {
       return true;
     };
 
-    const walk = (node: XmlNode, xhtmlDir: string): void => {
+    const walk = (node: XmlNode, xhtmlDir: string, activeBlock = false): void => {
       for (const child of toArr(node.childNodes)) {
         if (child.nodeType === NODE_TEXT) {
           const raw = child.nodeValue ?? '';
-          if (/\S/.test(raw)) builder.appendText(raw.replace(/\s+/g, ' '));
+          if (/\S/.test(raw)) {
+            const start = builder.nextTokenId;
+            builder.appendText(raw.replace(/\s+/g, ' '));
+            if (!activeBlock) builder.appendBlock(start, 'paragraph');
+          }
           continue;
         }
         if (!isElement(child)) continue;
@@ -298,13 +318,24 @@ export class EpubSourceParser implements SourceParser {
           const src = child.getAttribute('src') ?? child.getAttribute('xlink:href') ?? child.getAttribute('href');
           if (src) {
             const path = resolvePath(xhtmlDir, src);
-            if (addAsset(path)) builder.appendImage(path);
+            if (addAsset(path)) {
+              const start = builder.nextTokenId;
+              builder.appendImage(path);
+              if (!activeBlock) builder.appendBlock(start, 'paragraph');
+            }
           }
           continue;
         }
         const block = BLOCK.has(tag);
+        const role = blockRole(tag);
         if (block) builder.ensureNewline();
-        walk(child, xhtmlDir);
+        if (role && !activeBlock) {
+          const start = builder.nextTokenId;
+          walk(child, xhtmlDir, true);
+          builder.appendBlock(start, role.role, role.level);
+        } else {
+          walk(child, xhtmlDir, activeBlock);
+        }
         if (block) builder.appendText('\n');
       }
     };
@@ -341,6 +372,8 @@ export class EpubSourceParser implements SourceParser {
     // 6) 组装 Document
     const source = builder.source;
     const tokens = builder.tokens;
+    const blocks = builder.blocks.length > 0 ? builder.blocks : tokens.length > 0 ? [{ startTokenId: 0, role: 'paragraph' as const }] : [];
+    if (tokens.length > 0 && blocks[0]?.startTokenId !== 0) blocks.unshift({ startTokenId: 0, role: 'paragraph' });
     const wordCount = tokens.reduce((n, t) => (t.kind === 'word' ? n + 1 : n), 0);
     const id = stableId(source, file.name);
 
@@ -356,7 +389,7 @@ export class EpubSourceParser implements SourceParser {
       chapterCount: chapters.length,
     };
 
-    const document: Document = { id, title, source, tokens, chapters, meta };
+    const document: Document = { id, title, source, tokens, chapters, blocks, meta };
     return { document, assets: [...assets.values()] };
   }
 

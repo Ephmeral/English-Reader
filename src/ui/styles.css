@@ -366,6 +366,39 @@ body {
   text-align-last: left;
   hyphens: var(--reader-hyphens, auto);
 }
+.reader-block {
+  margin: 0 0 0.85em;
+}
+.reader-block:last-child {
+  margin-bottom: 0;
+}
+.blk-heading {
+  margin: 0.9em 0 0.45em;
+  font-weight: 700;
+  line-height: 1.28;
+}
+h2.blk-heading {
+  font-size: 1.35em;
+}
+h3.blk-heading {
+  font-size: 1.22em;
+}
+h4.blk-heading,
+h5.blk-heading,
+h6.blk-heading {
+  font-size: 1.12em;
+}
+.blk-quote {
+  margin: 0.9em 0;
+  padding: 0.65em 0.9em;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.blk-list-item {
+  display: list-item;
+  margin-left: 1.4em;
+  padding-left: 0.2em;
+}
 .reader-measure-page {
   position: absolute;
   top: 0;
