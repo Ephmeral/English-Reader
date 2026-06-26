@@ -10,6 +10,14 @@ export interface PaginationMetrics {
   renderTokens: (tokens: readonly Token[]) => readonly (Node | string)[];
 }
 
+export interface PageMeasure {
+  start: number;
+  startIndex: number;
+  endIndex: number;
+  tokenCount: number;
+  done: boolean;
+}
+
 function assertUsableMetrics(metrics: PaginationMetrics) {
   if (!Number.isFinite(metrics.pageHeightPx) || metrics.pageHeightPx <= 0) {
     throw new Error('pageHeightPx must be a positive finite number');
@@ -28,6 +36,62 @@ function fitsPage(
   return measureBox.scrollHeight <= metrics.pageHeightPx;
 }
 
+function normalizedSeed(seedTokenCount: number | undefined, remaining: number): number {
+  if (!Number.isFinite(seedTokenCount) || !seedTokenCount) return 1;
+  return Math.max(1, Math.min(remaining, Math.trunc(seedTokenCount)));
+}
+
+export function measurePage(
+  measureBox: PaginationMeasureBox,
+  tokens: readonly Token[],
+  startIndex: number,
+  metrics: PaginationMetrics,
+  seedTokenCount = 1,
+): PageMeasure | null {
+  assertUsableMetrics(metrics);
+  if (tokens.length === 0 || startIndex >= tokens.length) return null;
+
+  const token = tokens[startIndex];
+  if (!token) return null;
+
+  const remaining = tokens.length - startIndex;
+  let low = 0;
+  let high = normalizedSeed(seedTokenCount, remaining);
+  let restFits = false;
+
+  if (fitsPage(measureBox, tokens, startIndex, high, metrics)) {
+    low = high;
+    if (high === remaining) {
+      restFits = true;
+    }
+    while (!restFits) {
+      const nextHigh = Math.min(remaining, Math.max(high + 1, high * 2));
+      high = nextHigh;
+      if (!fitsPage(measureBox, tokens, startIndex, high, metrics)) break;
+      low = high;
+      if (high === remaining) restFits = true;
+    }
+  }
+
+  if (!restFits) {
+    while (low + 1 < high) {
+      const mid = low + Math.floor((high - low) / 2);
+      if (fitsPage(measureBox, tokens, startIndex, mid, metrics)) low = mid;
+      else high = mid;
+    }
+  }
+
+  const tokenCount = restFits ? low : Math.max(1, low);
+  const endIndex = Math.min(tokens.length, startIndex + tokenCount);
+  return {
+    start: token.start,
+    startIndex,
+    endIndex,
+    tokenCount,
+    done: endIndex >= tokens.length,
+  };
+}
+
 export function measurePageStarts(
   measureBox: PaginationMeasureBox,
   tokens: readonly Token[],
@@ -38,44 +102,14 @@ export function measurePageStarts(
 
   const pageStarts: number[] = [];
   let startIndex = 0;
+  let seedTokenCount = 1;
 
   while (startIndex < tokens.length) {
-    const token = tokens[startIndex];
-    if (!token) break;
-    pageStarts.push(token.start);
-
-    const remaining = tokens.length - startIndex;
-    let low = 0;
-    let high = 1;
-    let restFits = false;
-
-    while (high <= remaining) {
-      if (!fitsPage(measureBox, tokens, startIndex, high, metrics)) break;
-      low = high;
-      if (high === remaining) {
-        restFits = true;
-        break;
-      }
-      high = Math.min(remaining, high * 2);
-    }
-
-    if (restFits) {
-      startIndex += low;
-      continue;
-    }
-
-    if (low === 0) {
-      startIndex += 1;
-      continue;
-    }
-
-    while (low + 1 < high) {
-      const mid = low + Math.floor((high - low) / 2);
-      if (fitsPage(measureBox, tokens, startIndex, mid, metrics)) low = mid;
-      else high = mid;
-    }
-
-    startIndex += low;
+    const page = measurePage(measureBox, tokens, startIndex, metrics, seedTokenCount);
+    if (!page) break;
+    pageStarts.push(page.start);
+    startIndex = page.endIndex;
+    seedTokenCount = page.tokenCount;
   }
 
   measureBox.replaceChildren();
@@ -97,7 +131,7 @@ export function pageRangeForOffset(pageStarts: readonly number[], offset: number
   return Math.max(0, Math.min(pageStarts.length - 1, high));
 }
 
-function firstTokenAtOrAfter(tokens: readonly Token[], offset: number): number {
+export function firstTokenAtOrAfter(tokens: readonly Token[], offset: number): number {
   let low = 0;
   let high = tokens.length;
 

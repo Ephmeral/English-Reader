@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import type { Token, TokenKind } from '../src/core/model/token';
 import {
+  measurePage,
   measurePageStarts,
   pageRangeForOffset,
   tokensForPage,
@@ -30,17 +31,24 @@ function makeTokens(surfaces: string[]): Token[] {
 function setupMetrics(
   pageHeightPx: number,
   tokenHeight: (token: Token) => number,
-): { box: StubMeasureBox; metrics: PaginationMetrics; maxRendered: () => number } {
+): {
+  box: StubMeasureBox;
+  metrics: PaginationMetrics;
+  maxRendered: () => number;
+  renderPasses: () => number;
+} {
   const box = new StubMeasureBox();
   let maxRendered = 0;
+  let renderPasses = 0;
   const metrics: PaginationMetrics = {
     pageHeightPx,
     renderTokens(tokens) {
+      renderPasses += 1;
       maxRendered = Math.max(maxRendered, tokens.length);
       return [String(tokens.reduce((sum, token) => sum + tokenHeight(token), 0))];
     },
   };
-  return { box, metrics, maxRendered: () => maxRendered };
+  return { box, metrics, maxRendered: () => maxRendered, renderPasses: () => renderPasses };
 }
 
 function assertReconstructs(tokens: Token[], pageStarts: number[]) {
@@ -100,8 +108,31 @@ const paragraph = makeTokens([
   const pageStarts = measurePageStarts(box, manyTokens, metrics);
 
   assert.equal(pageStarts.length, 10);
-  assert.ok(maxRendered() <= 16);
+  assert.ok(maxRendered() <= 20);
   assertReconstructs(manyTokens, pageStarts);
+}
+
+{
+  const manyTokens = makeTokens(Array.from({ length: 250 }, (_, index) => String(index % 10)));
+  const sync = setupMetrics(25, () => 1);
+  const syncStarts = measurePageStarts(sync.box, manyTokens, sync.metrics);
+
+  const chunked = setupMetrics(25, () => 1);
+  const chunkedStarts: number[] = [];
+  let startIndex = 0;
+  let seedTokenCount = 1;
+  while (startIndex < manyTokens.length) {
+    const page = measurePage(chunked.box, manyTokens, startIndex, chunked.metrics, seedTokenCount);
+    assert.ok(page);
+    chunkedStarts.push(page.start);
+    startIndex = page.endIndex;
+    seedTokenCount = page.tokenCount;
+  }
+  chunked.box.replaceChildren();
+
+  assert.deepEqual(chunkedStarts, syncStarts);
+  assertReconstructs(manyTokens, chunkedStarts);
+  assert.ok(chunked.renderPasses() <= sync.renderPasses());
 }
 
 {

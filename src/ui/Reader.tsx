@@ -15,7 +15,94 @@ import type { ReadingPrefs, Theme } from '../app/deps';
 import type { SourceSelection } from './selection';
 import { selectionToSourceRange } from './selection';
 import { ReadingPanel } from './ReadingPanel';
-import { measurePageStarts, pageRangeForOffset, tokensForPage } from './reader/paginate';
+import {
+  firstTokenAtOrAfter,
+  measurePage,
+  measurePageStarts,
+  pageRangeForOffset,
+  tokensForPage,
+  type PaginationMeasureBox,
+  type PaginationMetrics,
+} from './reader/paginate';
+
+const RESIZE_MEASURE_DEBOUNCE_MS = 120;
+const LAYOUT_RETRY_MS = 50;
+const CHUNKED_PAGINATION_THRESHOLD = 4000;
+const INITIAL_CHUNKED_PAGES = 2;
+const FALLBACK_PAGE_TOKEN_COUNT = 220;
+const IDLE_PAGINATION_BUDGET_MS = 10;
+const IDLE_PAGINATION_MAX_PAGES = 1;
+const IDLE_PAGINATION_TIMEOUT_MS = 120;
+
+interface IdleDeadlineLike {
+  didTimeout: boolean;
+  timeRemaining: () => number;
+}
+
+type WindowWithIdleCallback = Window & {
+  requestIdleCallback?: (
+    callback: (deadline: IdleDeadlineLike) => void,
+    options?: { timeout: number },
+  ) => number;
+  cancelIdleCallback?: (handle: number) => void;
+};
+
+interface PageWindowMeasure {
+  starts: number[];
+  nextIndex: number;
+  seedTokenCount: number;
+  done: boolean;
+}
+
+function schedulePaginationIdle(callback: (deadline: IdleDeadlineLike) => void): () => void {
+  const win = window as WindowWithIdleCallback;
+  if (win.requestIdleCallback && win.cancelIdleCallback) {
+    const handle = win.requestIdleCallback(callback, { timeout: IDLE_PAGINATION_TIMEOUT_MS });
+    return () => win.cancelIdleCallback?.(handle);
+  }
+
+  const start = performance.now();
+  const handle = window.setTimeout(() => {
+    callback({
+      didTimeout: false,
+      timeRemaining: () => Math.max(0, IDLE_PAGINATION_BUDGET_MS - (performance.now() - start)),
+    });
+  }, 0);
+  return () => window.clearTimeout(handle);
+}
+
+function measurePageWindow(
+  measureBox: PaginationMeasureBox,
+  tokens: readonly Token[],
+  startIndex: number,
+  metrics: PaginationMetrics,
+  pageLimit: number,
+): PageWindowMeasure {
+  const starts: number[] = [];
+  let nextIndex = startIndex;
+  let seedTokenCount = 1;
+
+  while (nextIndex < tokens.length && starts.length < pageLimit) {
+    const page = measurePage(measureBox, tokens, nextIndex, metrics, seedTokenCount);
+    if (!page) break;
+    starts.push(page.start);
+    nextIndex = page.endIndex;
+    seedTokenCount = page.tokenCount;
+    if (page.done) break;
+  }
+
+  return {
+    starts,
+    nextIndex,
+    seedTokenCount,
+    done: nextIndex >= tokens.length,
+  };
+}
+
+function pageStartsWithBoundary(measure: PageWindowMeasure, tokens: readonly Token[]): number[] {
+  const nextStart = tokens[measure.nextIndex]?.start;
+  return measure.done || nextStart == null ? measure.starts : [...measure.starts, nextStart];
+}
 
 export interface WordClick {
   token: Token;
@@ -119,7 +206,7 @@ function createMeasureNodes(tokens: readonly Token[], ctx: RenderTokensContext):
       figure.className = 'reader-image';
       figure.dataset.start = String(token.start);
       const placeholder = document.createElement('div');
-      placeholder.className = 'image-placeholder';
+      placeholder.className = 'image-placeholder image-measure-placeholder';
       figure.append(placeholder);
       return figure;
     }
@@ -239,6 +326,7 @@ export function Reader({
   const [noteText, setNoteText] = useState('');
   const [readingPanelOpen, setReadingPanelOpen] = useState(false);
   const [pageStarts, setPageStarts] = useState<number[]>([]);
+  const [paginationComplete, setPaginationComplete] = useState(false);
   const [pageIndex, setPageIndex] = useState(0);
   const [trackPosition, setTrackPosition] = useState(-100);
   const [trackAnimating, setTrackAnimating] = useState(false);
@@ -300,14 +388,24 @@ export function Reader({
     [annotations, imageUrls, knownLemmas, learner, scale, xray],
   );
   const effectivePageStarts = useMemo(
-    () => (pageStarts.length ? pageStarts : chapterTokens[0] ? [chapterTokens[0].start] : []),
-    [chapterTokens, pageStarts],
+    () => {
+      if (pageStarts.length) return pageStarts;
+      if (chapterTokens.length === 0) return [];
+      const startIndex = firstTokenAtOrAfter(chapterTokens, initialOffset);
+      const start = chapterTokens[startIndex]?.start ?? chapterTokens[0]?.start ?? 0;
+      const fallbackEnd = chapterTokens[startIndex + FALLBACK_PAGE_TOKEN_COUNT]?.start;
+      return fallbackEnd != null && fallbackEnd > start ? [start, fallbackEnd] : [start];
+    },
+    [chapterTokens, initialOffset, pageStarts],
   );
-  const pageCount = Math.max(1, effectivePageStarts.length);
+  const pageCount = Math.max(
+    1,
+    paginationComplete ? effectivePageStarts.length : effectivePageStarts.length - 1,
+  );
   const safePageIndex = Math.max(0, Math.min(pageCount - 1, pageIndex));
   const chapterRatio = chapterTokens.length ? (safePageIndex + 1) / pageCount : 1;
   const currentPageNumber = safePageIndex + 1;
-  const remainingPages = Math.max(0, pageCount - currentPageNumber);
+  const remainingPages = paginationComplete ? Math.max(0, pageCount - currentPageNumber) : 0;
   const wordsPerPage = pageCount ? chapterWordCount / pageCount : chapterWordCount;
   const remainingMinutes = Math.ceil((remainingPages * wordsPerPage) / 200);
   const pageWindow = useMemo(
@@ -356,6 +454,7 @@ export function Reader({
     maxPercentRef.current = 0;
     pendingTurnRef.current = null;
     setPageStarts([]);
+    setPaginationComplete(false);
     setTrackAnimating(false);
     setTrackPosition(-100);
   }, [doc.id, initialOffset, safeChapterIndex]);
@@ -365,41 +464,177 @@ export function Reader({
     const measureBox = measureRef.current;
     if (!reader || !measureBox || chapterTokens.length === 0) {
       setPageStarts([]);
+      setPaginationComplete(false);
       return;
     }
+    const readerEl = reader;
+    const measureBoxEl = measureBox;
 
     let frame: number | null = null;
+    let timer: number | null = null;
+    let cancelIdleMeasure: (() => void) | null = null;
     let alive = true;
-    const measure = () => {
-      if (!alive) return;
-      const starts = measurePageStarts(measureBox, chapterTokens, {
-        pageHeightPx: Math.max(1, reader.clientHeight),
-        renderTokens: (tokens) => createMeasureNodes(tokens, renderCtx),
-      });
-      const retainedOffset =
-        pendingAnchorRef.current ?? currentPageStartRef.current ?? chapterTokens[0]?.start ?? 0;
-      const anchoredStarts = withAnchoredPageStart(starts, retainedOffset, chapterTokens);
-      setPageStarts(anchoredStarts);
-      setPageIndex(pageRangeForOffset(anchoredStarts, retainedOffset));
-      pendingTurnRef.current = null;
-      setTrackAnimating(false);
-      setTrackPosition(-100);
-    };
 
-    measure();
-    frame = requestAnimationFrame(measure);
-    if (document.fonts) {
-      void document.fonts.ready.then(measure);
+    function clearIdleMeasure() {
+      if (cancelIdleMeasure) {
+        cancelIdleMeasure();
+        cancelIdleMeasure = null;
+      }
     }
-    const resizeObserver = new ResizeObserver(() => {
-      if (frame != null) cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(measure);
-    });
-    resizeObserver.observe(reader);
+
+    function clearScheduledMeasure() {
+      if (frame != null) {
+        cancelAnimationFrame(frame);
+        frame = null;
+      }
+      if (timer != null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+      clearIdleMeasure();
+    }
+
+    function scheduleMeasure(delayMs = 0) {
+      if (!alive) return;
+      clearScheduledMeasure();
+      const requestMeasure = () => {
+        if (!alive) return;
+        frame = requestAnimationFrame(measure);
+      };
+      if (delayMs > 0) {
+        timer = window.setTimeout(() => {
+          timer = null;
+          requestMeasure();
+        }, delayMs);
+        return;
+      }
+      requestMeasure();
+    }
+
+    function scheduleResizeMeasure() {
+      scheduleMeasure(RESIZE_MEASURE_DEBOUNCE_MS);
+    }
+
+    function currentMetrics(): PaginationMetrics | null {
+      const pageHeightPx = readerEl.clientHeight;
+      if (pageHeightPx <= 0) {
+        return null;
+      }
+      return {
+        pageHeightPx,
+        renderTokens: (tokens) => createMeasureNodes(tokens, renderCtx),
+      };
+    }
+
+    function retainedOffset() {
+      return pendingAnchorRef.current ?? currentPageStartRef.current ?? chapterTokens[0]?.start ?? 0;
+    }
+
+    function applyMeasuredStarts(starts: readonly number[], complete: boolean, resetTrack: boolean) {
+      if (!alive) return;
+      const retained = retainedOffset();
+      const anchoredStarts = withAnchoredPageStart(starts, retained, chapterTokens);
+      setPageStarts(anchoredStarts);
+      setPaginationComplete(complete);
+      setPageIndex(pageRangeForOffset(anchoredStarts, retained));
+      if (resetTrack) {
+        pendingTurnRef.current = null;
+        setTrackAnimating(false);
+        setTrackPosition(-100);
+      }
+    }
+
+    function measureChunked(metrics: PaginationMetrics, initial: PageWindowMeasure | null, publishProgress: boolean) {
+      const starts = initial ? [...initial.starts] : [];
+      let nextIndex = initial?.nextIndex ?? 0;
+      let seedTokenCount = initial?.seedTokenCount ?? 1;
+
+      const runChunk = (deadline: IdleDeadlineLike) => {
+        cancelIdleMeasure = null;
+        if (!alive) return;
+        let measuredPages = 0;
+        while (nextIndex < chapterTokens.length && measuredPages < IDLE_PAGINATION_MAX_PAGES) {
+          const page = measurePage(measureBoxEl, chapterTokens, nextIndex, metrics, seedTokenCount);
+          if (!page) break;
+          starts.push(page.start);
+          nextIndex = page.endIndex;
+          seedTokenCount = page.tokenCount;
+          measuredPages += 1;
+          if (deadline.timeRemaining() <= 1 && measuredPages > 0) break;
+        }
+
+        if (nextIndex >= chapterTokens.length) {
+          measureBoxEl.replaceChildren();
+          applyMeasuredStarts(starts, true, false);
+          return;
+        }
+
+        if (publishProgress && starts.length > 0) {
+          applyMeasuredStarts(
+            pageStartsWithBoundary({ starts, nextIndex, seedTokenCount, done: false }, chapterTokens),
+            false,
+            false,
+          );
+        }
+        cancelIdleMeasure = schedulePaginationIdle(runChunk);
+      };
+
+      cancelIdleMeasure = schedulePaginationIdle(runChunk);
+    }
+
+    function measure() {
+      frame = null;
+      clearIdleMeasure();
+      if (!alive) return;
+      const metrics = currentMetrics();
+      if (!metrics) {
+        scheduleMeasure(LAYOUT_RETRY_MS);
+        return;
+      }
+      const retained = retainedOffset();
+
+      if (chapterTokens.length <= CHUNKED_PAGINATION_THRESHOLD) {
+        const starts = measurePageStarts(measureBoxEl, chapterTokens, metrics);
+        applyMeasuredStarts(starts, true, true);
+        return;
+      }
+
+      const startIndex = firstTokenAtOrAfter(chapterTokens, retained);
+      const initialWindow = measurePageWindow(
+        measureBoxEl,
+        chapterTokens,
+        startIndex,
+        metrics,
+        INITIAL_CHUNKED_PAGES,
+      );
+      const initialStarts = pageStartsWithBoundary(initialWindow, chapterTokens);
+      const complete = startIndex === 0 && initialWindow.done;
+      applyMeasuredStarts(initialStarts, complete, true);
+      if (!complete) {
+        measureChunked(metrics, startIndex === 0 ? initialWindow : null, startIndex === 0);
+      }
+    }
+
+    if (chapterTokens.length > CHUNKED_PAGINATION_THRESHOLD) {
+      scheduleMeasure();
+    } else {
+      measure();
+      scheduleMeasure();
+    }
+    if (document.fonts) {
+      void document.fonts.ready.then(() => scheduleMeasure());
+    }
+    const resizeObserver = new ResizeObserver(scheduleResizeMeasure);
+    resizeObserver.observe(readerEl);
+    window.addEventListener('resize', scheduleResizeMeasure);
+    window.addEventListener('orientationchange', scheduleResizeMeasure);
     return () => {
       alive = false;
       resizeObserver.disconnect();
-      if (frame != null) cancelAnimationFrame(frame);
+      window.removeEventListener('resize', scheduleResizeMeasure);
+      window.removeEventListener('orientationchange', scheduleResizeMeasure);
+      clearScheduledMeasure();
+      clearIdleMeasure();
     };
   }, [chapterTokens, initialOffset, readingPrefs, renderCtx]);
 
@@ -494,7 +729,9 @@ export function Reader({
         return;
       }
       if (delta > 0 && safePageIndex >= pageCount - 1) {
-        onChapterChange(Math.min(chapters.length - 1, safeChapterIndex + 1));
+        if (paginationComplete) {
+          onChapterChange(Math.min(chapters.length - 1, safeChapterIndex + 1));
+        }
         return;
       }
 
@@ -508,6 +745,7 @@ export function Reader({
       clearTransientUi,
       onChapterChange,
       pageCount,
+      paginationComplete,
       safeChapterIndex,
       safePageIndex,
       trackAnimating,
@@ -671,7 +909,8 @@ export function Reader({
   const prev = () => onChapterChange(Math.max(0, safeChapterIndex - 1));
   const next = () => onChapterChange(Math.min(chapters.length - 1, safeChapterIndex + 1));
   const canTurnPrev = safePageIndex > 0 || safeChapterIndex > 0;
-  const canTurnNext = safePageIndex < pageCount - 1 || safeChapterIndex < chapters.length - 1;
+  const canTurnNext =
+    safePageIndex < pageCount - 1 || (paginationComplete && safeChapterIndex < chapters.length - 1);
 
   return (
     <div className="reader-wrap" style={readerStyle}>
@@ -812,10 +1051,14 @@ export function Reader({
       </div>
       <div className="page-status" aria-label="本章页码">
         <span>
-          本章第 {currentPageNumber} / {pageCount} 页
+          本章第 {currentPageNumber} / {paginationComplete ? pageCount : `${pageCount}+`} 页
         </span>
         <span>
-          {remainingPages === 0 ? '本章最后一页' : `剩 ${remainingPages} 页 · 约 ${remainingMinutes} 分钟`}
+          {!paginationComplete
+            ? `正在分页… 已可读 ${pageCount} 页`
+            : remainingPages === 0
+              ? '本章最后一页'
+              : `剩 ${remainingPages} 页 · 约 ${remainingMinutes} 分钟`}
         </span>
       </div>
     </div>

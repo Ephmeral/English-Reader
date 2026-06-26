@@ -351,6 +351,7 @@ body {
   pointer-events: none;
 }
 .reader-page {
+  --reader-image-max-height: min(420px, calc(100dvh - 260px));
   height: 100%;
   overflow: hidden;
   margin: 0;
@@ -407,10 +408,13 @@ body {
   max-height: 100%;
   text-align: center;
 }
+.reader-image img,
+.image-measure-placeholder {
+  max-width: 100%;
+  max-height: var(--reader-image-max-height);
+}
 .reader-image img {
   display: block;
-  max-width: 100%;
-  max-height: min(420px, calc(100dvh - 260px));
   margin: 0 auto;
   object-fit: contain;
   border-radius: 6px;
@@ -423,6 +427,10 @@ body {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--placeholder-bg);
+}
+.image-measure-placeholder {
+  width: min(480px, 100%);
+  height: var(--reader-image-max-height);
 }
 .page-status {
   display: flex;
