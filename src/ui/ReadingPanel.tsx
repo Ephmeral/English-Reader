@@ -24,7 +24,7 @@ export function ReadingPanel({
   return (
     <div className="reading-panel" role="dialog" aria-label="阅读设置">
       <label className="reading-control">
-        <span>页边距</span>
+        <span>左右边距</span>
         <input
           type="range"
           min={24}
@@ -36,6 +36,51 @@ export function ReadingPanel({
           }
         />
         <span className="reading-value">{prefs.marginPx}px</span>
+      </label>
+
+      <label className="reading-control">
+        <span>上下边距</span>
+        <input
+          type="range"
+          min={8}
+          max={80}
+          step={4}
+          value={prefs.marginVPx}
+          onChange={(event) =>
+            onPrefsChange({ ...prefs, marginVPx: Number(event.currentTarget.value) })
+          }
+        />
+        <span className="reading-value">{prefs.marginVPx}px</span>
+      </label>
+
+      <label className="reading-control">
+        <span>首行缩进</span>
+        <input
+          type="range"
+          min={0}
+          max={2}
+          step={0.1}
+          value={prefs.firstLineIndentEm}
+          onChange={(event) =>
+            onPrefsChange({ ...prefs, firstLineIndentEm: Number(event.currentTarget.value) })
+          }
+        />
+        <span className="reading-value">{prefs.firstLineIndentEm.toFixed(1)}em</span>
+      </label>
+
+      <label className="reading-control">
+        <span>段落间距</span>
+        <input
+          type="range"
+          min={0}
+          max={1.6}
+          step={0.1}
+          value={prefs.paragraphSpacingEm}
+          onChange={(event) =>
+            onPrefsChange({ ...prefs, paragraphSpacingEm: Number(event.currentTarget.value) })
+          }
+        />
+        <span className="reading-value">{prefs.paragraphSpacingEm.toFixed(1)}em</span>
       </label>
 
       <label className="reading-control">

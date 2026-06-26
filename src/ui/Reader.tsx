@@ -399,6 +399,9 @@ export function Reader({
         '--reader-font': `${readingPrefs.fontPx}px`,
         '--reader-line': `${readingPrefs.lineHeight}`,
         '--reader-margin': `${readingPrefs.marginPx}px`,
+        '--reader-margin-v': `${readingPrefs.marginVPx}px`,
+        '--reader-indent': `${readingPrefs.firstLineIndentEm}em`,
+        '--reader-para-spacing': `${readingPrefs.paragraphSpacingEm}em`,
         '--reader-font-family':
           readingPrefs.fontFamily === 'serif'
             ? "'Literata', Georgia, 'Times New Roman', 'Songti SC', serif"

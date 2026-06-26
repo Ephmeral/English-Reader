@@ -355,7 +355,7 @@ body {
   height: 100%;
   overflow: hidden;
   margin: 0;
-  padding: 16px min(var(--reader-margin, 64px), 12vw);
+  padding: var(--reader-margin-v, 24px) min(var(--reader-margin, 64px), 12vw);
   white-space: pre-wrap;
   overflow-wrap: break-word;
   word-break: normal;
@@ -367,7 +367,7 @@ body {
   hyphens: var(--reader-hyphens, auto);
 }
 .reader-block {
-  margin: 0 0 0.85em;
+  margin: 0 0 var(--reader-para-spacing, 0.85em);
 }
 .reader-block:last-child {
   margin-bottom: 0;
@@ -376,6 +376,9 @@ body {
   margin: 0.9em 0 0.45em;
   font-weight: 700;
   line-height: 1.28;
+}
+.blk-paragraph {
+  text-indent: var(--reader-indent, 0em);
 }
 h2.blk-heading {
   font-size: 1.35em;

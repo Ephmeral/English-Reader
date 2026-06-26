@@ -38,6 +38,9 @@ export interface ReadingPrefs {
   fontPx: number;
   lineHeight: number;
   marginPx: number;
+  marginVPx: number;
+  firstLineIndentEm: number;
+  paragraphSpacingEm: number;
   fontFamily: 'serif' | 'sans';
   justify: boolean;
 }
@@ -46,6 +49,9 @@ export const DEFAULT_READING_PREFS: ReadingPrefs = {
   fontPx: 19,
   lineHeight: 1.8,
   marginPx: 64,
+  marginVPx: 24,
+  firstLineIndentEm: 0,
+  paragraphSpacingEm: 0.8,
   fontFamily: 'serif',
   justify: true,
 };
@@ -59,6 +65,13 @@ export function normalizeReadingPrefs(value: unknown): ReadingPrefs {
       ? raw.lineHeight!
       : DEFAULT_READING_PREFS.lineHeight,
     marginPx: Number.isFinite(raw.marginPx) ? raw.marginPx! : DEFAULT_READING_PREFS.marginPx,
+    marginVPx: Number.isFinite(raw.marginVPx) ? raw.marginVPx! : DEFAULT_READING_PREFS.marginVPx,
+    firstLineIndentEm: Number.isFinite(raw.firstLineIndentEm)
+      ? raw.firstLineIndentEm!
+      : DEFAULT_READING_PREFS.firstLineIndentEm,
+    paragraphSpacingEm: Number.isFinite(raw.paragraphSpacingEm)
+      ? raw.paragraphSpacingEm!
+      : DEFAULT_READING_PREFS.paragraphSpacingEm,
     fontFamily:
       raw.fontFamily === 'sans' || raw.fontFamily === 'serif'
         ? raw.fontFamily
