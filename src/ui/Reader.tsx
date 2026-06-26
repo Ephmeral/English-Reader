@@ -80,6 +80,14 @@ export interface JumpTarget {
   nonce: number;
 }
 
+export interface ReadingRhythm {
+  todayWords: number;
+  dailyWords: number;
+  weekDone: number;
+  daysPerWeek: number;
+  streakWeeks: number;
+}
+
 function intersectsRange(token: Token, annotation: Annotation): boolean {
   if (annotation.anchor.kind !== 'range') return false;
   if (token.end === token.start) return false;
@@ -366,15 +374,22 @@ export function Reader({
   onChapterChange,
   onWordClick,
   onProgress,
+  onReadingAdvance,
   onResumeChange,
   onVisibleOffsetChange,
   onCreateRangeAnnotation,
   onJumpComplete,
   onXrayEnabledChange,
+  onOpenPrelearn,
+  onOpenStats,
   onPageTurn,
   onReadingPrefsChange,
   onThemeChange,
   onToggleFocus,
+  readingRhythm,
+  difficultyHint,
+  onDismissDifficultyHint,
+  onLeaveBook,
 }: {
   doc: Document;
   storage: Storage;
@@ -391,6 +406,7 @@ export function Reader({
   onChapterChange: (index: number) => void;
   onWordClick: (c: WordClick) => void;
   onProgress: (maxTokenId: number, percent: number) => void;
+  onReadingAdvance: (wordPosition: number) => void;
   onResumeChange: (state: ResumeState) => void;
   onVisibleOffsetChange: (offset: number) => void;
   onCreateRangeAnnotation: (range: {
@@ -401,10 +417,16 @@ export function Reader({
   }) => void;
   onJumpComplete: () => void;
   onXrayEnabledChange: (enabled: boolean) => void;
+  onOpenPrelearn: () => void;
+  onOpenStats: () => void;
   onPageTurn: () => void;
   onReadingPrefsChange: (prefs: ReadingPrefs) => void;
   onThemeChange: (theme: Theme) => void;
   onToggleFocus: () => void;
+  readingRhythm: ReadingRhythm;
+  difficultyHint: { density: number } | null;
+  onDismissDifficultyHint: () => void;
+  onLeaveBook: () => void;
 }) {
   const readerRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<HTMLElement>(null);
@@ -420,9 +442,9 @@ export function Reader({
   const wheelLockRef = useRef<number | null>(null);
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
   const [activeSelection, setActiveSelection] = useState<SourceSelection | null>(null);
+  const [activeFootnote, setActiveFootnote] = useState<ActiveFootnote | null>(null);
   const [noteMode, setNoteMode] = useState(false);
   const [noteText, setNoteText] = useState('');
-  const [activeFootnote, setActiveFootnote] = useState<ActiveFootnote | null>(null);
   const [readingPanelOpen, setReadingPanelOpen] = useState(false);
   const [pageStarts, setPageStarts] = useState<number[]>([]);
   const [paginationComplete, setPaginationComplete] = useState(false);
@@ -490,14 +512,14 @@ export function Reader({
     [annotations, doc.emphases, imageUrls, knownLemmas, learner, scale, xray],
   );
   const documentBlocks = useMemo(() => doc.blocks ?? [], [doc.blocks]);
-  const effectivePageStarts = useMemo(
-    () => {
   const documentFootnotes = useMemo(() => doc.footnotes ?? [], [doc.footnotes]);
   const footnoteById = useMemo(() => {
     const map = new Map<string, Footnote>();
     for (const footnote of documentFootnotes) map.set(footnote.id, footnote);
     return map;
   }, [documentFootnotes]);
+  const effectivePageStarts = useMemo(
+    () => {
       if (pageStarts.length) return pageStarts;
       if (chapterTokens.length === 0) return [];
       const startIndex = firstTokenAtOrAfter(chapterTokens, initialOffset);
@@ -776,8 +798,6 @@ export function Reader({
     };
   }, []);
 
-  const openLookup = useCallback(
-    (target: EventTarget | null) => {
   const openFootnote = useCallback(
     (target: EventTarget | null): boolean => {
       if (!(target instanceof HTMLElement)) return false;
@@ -792,6 +812,8 @@ export function Reader({
     [footnoteById],
   );
 
+  const openLookup = useCallback(
+    (target: EventTarget | null) => {
       if (!(target instanceof HTMLElement)) return;
       const el = target.closest<HTMLElement>('[data-start]');
       if (!el) return;
@@ -799,9 +821,9 @@ export function Reader({
       if (!Number.isFinite(start)) return;
       const token = tokenByStart.get(start);
       if (!token) return;
+      setActiveFootnote(null);
       onWordClick({ token, rect: el.getBoundingClientRect() });
     },
-      setActiveFootnote(null);
     [onWordClick, tokenByStart],
   );
 
@@ -812,9 +834,9 @@ export function Reader({
         return;
       }
       if (hasActiveTextSelection()) return;
+      if (openFootnote(e.target)) return;
       openLookup(e.target);
     },
-      if (openFootnote(e.target)) return;
     [openFootnote, openLookup],
   );
 
@@ -822,18 +844,18 @@ export function Reader({
     (e: KeyboardEvent<HTMLElement>) => {
       if (e.key !== 'Enter' && e.key !== ' ') return;
       e.preventDefault();
+      if (openFootnote(e.target)) return;
       openLookup(e.target);
     },
-      if (openFootnote(e.target)) return;
     [openFootnote, openLookup],
   );
 
   const clearTransientUi = useCallback(() => {
     onPageTurn();
     setReadingPanelOpen(false);
+    setActiveFootnote(null);
     setActiveSelection(null);
     setNoteMode(false);
-    setActiveFootnote(null);
     setNoteText('');
     window.getSelection()?.removeAllRanges();
   }, [onPageTurn]);
@@ -975,6 +997,7 @@ export function Reader({
     onResumeChange({ offset });
 
     const wordPosition = runningWordPositionForOffset(runningWordStarts, offset);
+    onReadingAdvance(wordPosition);
     const percent = runningWordStarts.length
       ? Math.round((wordPosition / runningWordStarts.length) * 100)
       : 100;
@@ -990,6 +1013,7 @@ export function Reader({
     effectivePageStarts,
     initialOffset,
     onProgress,
+    onReadingAdvance,
     onResumeChange,
     onVisibleOffsetChange,
     pageTokens,
@@ -1029,9 +1053,36 @@ export function Reader({
   const canTurnPrev = safePageIndex > 0 || safeChapterIndex > 0;
   const canTurnNext =
     safePageIndex < pageCount - 1 || (paginationComplete && safeChapterIndex < chapters.length - 1);
+  const goalProgress = Math.min(1, readingRhythm.todayWords / readingRhythm.dailyWords);
+  const estimatedMinutes = Math.max(1, Math.round(readingRhythm.dailyWords / 75));
+  const goalStyle = { '--goal-progress': `${Math.round(goalProgress * 100)}%` } as CSSProperties;
 
   return (
     <div className="reader-wrap" style={readerStyle}>
+      <div className="reading-goal-widget" style={goalStyle} aria-label="今日进度">
+        <div className={goalProgress >= 1 ? 'goal-ring complete' : 'goal-ring'}>
+          <span>{Math.round(goalProgress * 100)}%</span>
+        </div>
+        <div>
+          <strong>今日 {readingRhythm.todayWords} / {readingRhythm.dailyWords}</strong>
+          <span className="muted">≈ 半页 / ≈ {estimatedMinutes} 分钟</span>
+          <span className="muted">
+            本周 {readingRhythm.weekDone} / {readingRhythm.daysPerWeek} · 已坚持{' '}
+            {readingRhythm.streakWeeks} 周
+          </span>
+        </div>
+      </div>
+      {difficultyHint && (
+        <div className="difficulty-hint">
+          <span>这本对你有点吃力，要不要换更顺的一本?</span>
+          <button type="button" onClick={onOpenPrelearn}>
+            先预背几个词再回来
+          </button>
+          <button type="button" onClick={onDismissDifficultyHint}>
+            暂不提示
+          </button>
+        </div>
+      )}
       <div className="chapter-bar">
         <button type="button" onClick={prev} disabled={safeChapterIndex === 0}>
           上一章
@@ -1050,6 +1101,12 @@ export function Reader({
           />
           x-ray
         </label>
+        <button type="button" onClick={onOpenStats}>
+          统计
+        </button>
+        <button type="button" onClick={onOpenPrelearn}>
+          预背本书生词
+        </button>
         <div className="reading-panel-anchor">
           <button
             type="button"
@@ -1073,6 +1130,9 @@ export function Reader({
         </div>
         <button type="button" onClick={onToggleFocus}>
           专注
+        </button>
+        <button type="button" onClick={onLeaveBook}>
+          这本不适合我
         </button>
       </div>
       <div
@@ -1167,11 +1227,6 @@ export function Reader({
           </div>
         )}
       </div>
-      <div className="page-status" aria-label="本章页码">
-        <span>
-          本章第 {currentPageNumber} / {paginationComplete ? pageCount : `${pageCount}+`} 页
-        </span>
-        <span>
       {activeFootnote && (
         <>
           <div className="popup-backdrop" onClick={() => setActiveFootnote(null)} />
@@ -1199,6 +1254,11 @@ export function Reader({
           </div>
         </>
       )}
+      <div className="page-status" aria-label="本章页码">
+        <span>
+          本章第 {currentPageNumber} / {paginationComplete ? pageCount : `${pageCount}+`} 页
+        </span>
+        <span>
           {!paginationComplete
             ? `正在分页… 已可读 ${pageCount} 页`
             : remainingPages === 0
