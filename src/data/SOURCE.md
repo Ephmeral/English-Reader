@@ -28,8 +28,19 @@
 ## band 分段规则（登记）
 
 - band = k-list 序号，离散整数 `1..25`；`maxBand = 25`。
-- 滑块（学习者水平）取值域：整数 `1..25`，默认 `3`（约掌握 3k 词族 ≈ 中级）。
-- 标记规则：`band > sliderLevel` 的词被高亮；OOV（`band=null`）恒被标记。
+- `measuredBand` 为测量事实水平；`highlightBand` 为阅读标记偏好。两者取值域均为整数 `1..25`。
+- 标记规则：`band > highlightBand` 的词被高亮；推荐/预背默认使用 `measuredBand ?? highlightBand`；OOV（`band=null`）恒被标记。
+
+## 语义识别说明
+
+- 专名识别不引入外部 NER/LLM 数据源；运行期只用文档内大小写位置统计 + `Lexicon.level()` 的 OOV 判定做本地启发式分类。
+- 识别结果按需派生，不写入 `Token` 或 `DocumentMeta`。
+
+## 词汇量测试诱饵词
+
+- `decoys.json` 为手工构造的英语形态伪词，用于内置词汇量测试的误认率估算。
+- 构造方式：组合常见英语音节和后缀，人工避开常见真词；运行期 `generateTest()` 还会排除已出现在 `lexicon-table.json` 的条目。
+- 该文件不是语料库衍生数据，不携带外部授权约束；若将来发布正式测评，可替换为更严格审校的 pseudo-word 列表。
 
 ## 离线词典来源与授权（阶段 12）
 

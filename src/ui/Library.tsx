@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DocumentMeta } from '../core/model/token';
 import type { VocabProfile } from '../core/model/token';
-import { DEFAULT_XRAY_SETTINGS, bucketOf } from '../core/model/buckets';
-import { coverageAtLevel, vocabNeededFor } from '../core/model/vocab-profile';
+import { DEFAULT_XRAY_SETTINGS } from '../core/model/buckets';
+import { bucketDistribution, coverageAtLevel, vocabNeededFor } from '../core/model/vocab-profile';
 import { DEFAULT_BOOKS } from '../data/books';
 import { importFromFile, importFromText } from '../app/import-doc';
 import type { Deps } from '../app/deps';
@@ -134,15 +134,6 @@ export function Library({
   );
 }
 
-function bucketCounts(profile: VocabProfile): number[] {
-  const counts = Array(DEFAULT_XRAY_SETTINGS.buckets.length).fill(0) as number[];
-  profile.bandCounts.forEach((count, band) => {
-    const bucket = band === 0 ? 4 : bucketOf(band);
-    counts[bucket] = (counts[bucket] ?? 0) + count;
-  });
-  return counts;
-}
-
 function Readability({
   profile,
   sliderLevel,
@@ -154,7 +145,7 @@ function Readability({
 
   const coverage = coverageAtLevel(profile, sliderLevel);
   const needed = vocabNeededFor(profile, 0.95);
-  const counts = bucketCounts(profile);
+  const counts = bucketDistribution(profile);
   const total = Math.max(1, profile.tokenCount);
 
   return (
